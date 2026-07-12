@@ -1,0 +1,61 @@
+/* Roboto Flex as a real variable font (Tier 0 stretches THIS native text). */
+@font-face {
+  font-family: 'Roboto Flex VF';
+  src: url('/fonts/RobotoFlex-VF.woff2') format('woff2');
+  font-weight: 100 1000;
+  font-stretch: 25% 151%;
+  font-display: swap;
+}
+
+:root {
+  --bg: #0e0f13;
+  --panel: #171922;
+  --line: #262a37;
+  --ink: #e8eaf2;
+  --muted: #8b90a3;
+  --accent: #6ea8fe;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+
+.topbar { display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.brand { font-weight: 700; letter-spacing: .2px; }
+.muted { color: var(--muted); font-weight: 400; }
+.modes button { background: transparent; color: var(--muted); border: 1px solid var(--line);
+  padding: 6px 12px; border-radius: 8px; cursor: pointer; margin-left: 6px; }
+.modes button.active { color: var(--ink); border-color: var(--accent); }
+
+.layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100% - 53px); }
+.controls { overflow-y: auto; padding: 14px; border-right: 1px solid var(--line);
+  background: var(--panel); }
+.stage { position: relative; overflow: auto; }
+
+.field { margin-bottom: 12px; }
+.field label { display: flex; justify-content: space-between; color: var(--muted);
+  font-size: 12px; margin-bottom: 4px; }
+.field label b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.field input[type=range] { width: 100%; }
+.field select, .field input[type=text], .field input[type=number] {
+  width: 100%; background: #0f111a; color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; }
+.field.row { display: flex; align-items: center; gap: 8px; }
+.field.row input[type=checkbox] { width: 16px; height: 16px; }
+.group-title { text-transform: uppercase; letter-spacing: .08em; font-size: 11px;
+  color: var(--muted); margin: 18px 0 8px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+
+.stage-inner { min-height: 220px; display: flex; align-items: center; justify-content: center;
+  padding: 24px; }
+.hero { font-size: clamp(48px, 12vw, 128px); font-weight: 700; margin: 0; white-space: nowrap;
+  font-family: 'Roboto Flex VF', ui-sans-serif, system-ui, sans-serif; }
+.vf-font { font-family: 'Roboto Flex VF', sans-serif; }
+.tierline { text-align: center; color: var(--muted); }
+.tierline b { color: var(--accent); }
+.notes { margin: 8px 16px; padding: 10px 12px; background: #0f111a; border: 1px solid var(--line);
+  border-radius: 8px; color: var(--muted); white-space: pre-wrap; font-size: 12px; }
+
+.compare-view { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+.cmp-cell { background: var(--bg); padding: 8px 8px 12px; }
+.cmp-cell h2 { font-size: 12px; color: var(--muted); text-align: center; margin: 6px 0; font-weight: 600; }
+.cmp-cell .hero { font-size: clamp(32px, 7vw, 84px); }

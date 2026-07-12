@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fontuccine · playground</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%F0%9F%8D%9C%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Fontuccine <span class="muted">playground</span></div>
+      <nav class="modes">
+        <button data-mode="single" class="active">Single</button>
+        <button data-mode="compare">Tier comparison</button>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <aside id="controls" class="controls" aria-label="Configuration"></aside>
+
+      <section id="stage" class="stage">
+        <!-- Single-tier view -->
+        <div id="single" class="single-view">
+          <div class="stage-inner">
+            <h1 id="hero" class="hero">Stretchy</h1>
+          </div>
+          <p class="tierline">tier: <b id="tier-badge">…</b></p>
+          <pre id="notes" class="notes"></pre>
+        </div>
+
+        <!-- Side-by-side comparison (doubles as the QA visual harness) -->
+        <div id="compare" class="compare-view" hidden>
+          <div class="cmp-cell"><h2>auto</h2><div class="stage-inner"><h1 class="hero" data-cmp="auto">Stretchy</h1></div><p class="tierline">→ <b data-badge="auto">…</b></p></div>
+          <div class="cmp-cell"><h2>webgl (Tier 1)</h2><div class="stage-inner"><h1 class="hero" data-cmp="webgl">Stretchy</h1></div><p class="tierline">→ <b data-badge="webgl">…</b></p></div>
+          <div class="cmp-cell"><h2>svg (Tier 2)</h2><div class="stage-inner"><h1 class="hero" data-cmp="svg">Stretchy</h1></div><p class="tierline">→ <b data-badge="svg">…</b></p></div>
+          <div class="cmp-cell"><h2>vf (Tier 0)</h2><div class="stage-inner"><h1 class="hero vf-font" data-cmp="vf">Stretchy</h1></div><p class="tierline">→ <b data-badge="vf">…</b></p></div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

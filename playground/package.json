@@ -1,0 +1,15 @@
+{
+  "name": "fontuccine-playground",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Live playground + QA visual harness for Fontuccine. Not published.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4317"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "name": "fontuccine",
+  "version": "0.1.0",
+  "description": "Framework-agnostic, tangent-aligned font stretching that looks like motion design, not scale(). Interaction-driven, typographically correct on any outline font.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "typography",
+    "variable-fonts",
+    "webgl",
+    "msdf",
+    "svg",
+    "text-animation",
+    "kinetic-typography",
+    "font-stretch"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./svg": {
+      "types": "./dist/svg.d.ts",
+      "import": "./dist/svg.js"
+    },
+    "./webgl": {
+      "types": "./dist/webgl.d.ts",
+      "import": "./dist/webgl.js"
+    },
+    "./vf": {
+      "types": "./dist/vf.d.ts",
+      "import": "./dist/vf.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "RESEARCH.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsup",
+    "size": "node scripts/size-report.mjs",
+    "harness": "node harness/run.mjs",
+    "demo": "node scripts/demo.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "opentype.js": "^1.3.4"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@fontsource-variable/roboto-flex": "^5.2.8",
+    "@types/jsdom": "^28.0.3",
+    "@types/node": "^22.20.1",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "jsdom": "^29.1.1",
+    "puppeteer-core": "^23.11.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.6.0"
+  }
+}
