@@ -1,153 +1,135 @@
 # Fontuccine
 
-Framework-agnostic, hardware-accelerated font stretching that looks like
-motion design, not like `scale()`. Interaction-driven (scroll velocity,
-cursor proximity, hover), typographically correct on **any** outline font.
+Framework-agnostic, hardware-accelerated font **stretching** that reads like
+motion design — not like `scale()`. Interaction-driven (scroll velocity, cursor
+proximity, hover, or your own signal), typographically correct on **any**
+outline font.
 
-**Status:** R&D complete, architecture approved, math core verified. Ready for implementation.
+`scale()` distorts everything uniformly — stems fatten, serifs smear, counters
+collapse. Fontuccine instead computes a **tangent-aligned flex profile** per
+glyph: every slice gets a stretchiness weight from how aligned its outline
+tangents are with the stretch direction, so perpendicular strokes, caps, and
+serifs stay rigid while aligned runs and empty space absorb the stretch. The
+result looks *designed*, at any ratio.
 
-## What's in this repo
+![horizontal stretch demo](demos/demo-horizontal.png)
 
-| Path | Contents |
-|---|---|
-| `RESEARCH.md` | R&D findings, verified perf facts (with corrections to the original RFC), pipeline benchmark, the approved decision, risks |
-| `refs/SOURCES.md` | Annotated source list (★-rated per implementation area) |
-| `refs/examples/` | **Verified** reference implementations: analysis core + remap LUT (17/17 invariants passing), real-font demo renders (DejaVu Serif, see `demo-*.png`), Tier-1 GLSL pair, Tier-2 exact-affine SVG algorithm, ticker/stimuli architecture, Tier-0 VF mapping |
-| `.claude/agents/` | The implementation team: architect (orchestrator), glyph-analysis, gpu-render, dom-render, interaction, packaging, qa-perf-auditor |
+- **Zero required runtime deps** — `opentype.js` is imported lazily, only when a tier actually parses an outline (never in the base bundle).
+- **Three render tiers, auto-dispatched** — WebGL2, SVG, or native variable-font `wdth`, picked from device capability (override with `tier`).
+- **Correct by construction** — 147 tests over the math core (17/17 geometric invariants), tier parity, kerning, winding, worker transport, and SSR safety.
+- **Any framework, or none** — a vanilla `attach()` core plus a thin React wrapper (`fontuccine/react`). Real DOM text always stays for selection / SEO / a11y.
 
-## The approved architecture (one paragraph)
-
-A worker computes, once per glyph per axis, a **tangent-aligned flex profile**
-(Pagurek 2025): every slice of the glyph gets a stretchiness weight from how
-aligned its nearest outline tangents are with the stretch direction — so
-perpendicular strokes, caps and serifs stay rigid while aligned/empty zones
-absorb the stretch. The profile reduces to a **cumulative remap LUT** consumed
-identically by three renderers: **Tier 1 WebGL2 + runtime MSDF atlas**
-(primary: vertex-remap through the LUT texture, crisp at any ratio, post-fx
-capable), **Tier 2 SVG** (split béziers at slice boundaries → per-slice affine
-control-point remap = mathematically exact; no-WebGL fallback), **Tier 0
-variable-font `wdth`** (opportunistic, clamped to the axis range). One ticker
-(READ→UPDATE→RENDER) drives springs from scroll-velocity/proximity/hover
-stimuli. Real DOM text always remains for selection/SEO/a11y.
-
-**Tier behavior note:** under `tier: 'webgl'` (Tier 1) the effect is
-stretch-only — a requested compression (effective stretch < 1) clamps to the
-glyph's natural width. Use `tier: 'svg'` (Tier 2) when you need compression
-fidelity.
-
-## Public API sketch (the contract the agents build to)
-
-```ts
-import { Fontuccine } from 'fontuccine';
-
-const instance = Fontuccine.attach('#hero', {
-  axis: 'horizontal' | 'vertical' | 'dual',
-  trigger: 'scroll-velocity' | 'mouse-proximity' | 'hover' | 'custom',
-
-  maxStretchRatio: 4.5,
-  minStretchRatio: 1,
-  edgeProtection: 8,          // Pagurek's k: high = hard 9-slice, low = uniform
-  lutResolution: 96,          // slices per axis
-
-  physics: { stiffness: 140, damping: 22 },   // or easingCurve: 'cubic-bezier(…)'
-  easingDuration: 0.3,        // tween length (s) for the easingCurve alternative; default 0.3
-  proximityRadius: 240,
-  velocityToStretch: 0.002,
-
-  tier: 'auto' | 'webgl' | 'svg' | 'vf',
-  effects: {                   // Tier-1 only; ignored elsewhere
-    grain: 0.15,
-    aberration: { max: 2.5, fromVelocity: true },
-    displacement: { texture: '/textures/tv-noise.png', intensity: 1.5 },
-  },
-
-  wrap: 'nowrap' | 'reserve', // reflow-per-frame is not offered (by design)
-  reserveBasis: 'tier-capability' | 'uniform', // (default 'tier-capability') how wrap:'reserve' sizes the box: 'tier-capability' = each tier reserves what it can actually paint (Tiers 1/2 × maxStretchRatio, VF × axis-max); 'uniform' = every tier reserves × maxStretchRatio for cross-tier consistency (VF leaves a permanent gap)
-  respectReducedMotion: true,
-});
-
-instance.set(1.8);            // manual drive (trigger: 'custom')
-instance.destroy();
-```
-
-## Install & usage
+## Install
 
 ```bash
 npm install fontuccine
 ```
 
-ESM-only, framework-agnostic. Subpath exports so a bundle pays only for the tier
-it imports:
+## Quickstart
 
-| Import | What you get |
-|---|---|
-| `fontuccine` | The engine: `Fontuccine.attach(target, config)` with `tier:'auto'` dispatch (WebGL primary → VF opportunistic → SVG fallback). |
-| `fontuccine/svg` | Tier 2 renderer only (`createSvgRenderer`) — exact vectors, no-WebGL/fidelity path. |
-| `fontuccine/webgl` | Tier 1 renderer only (`createWebglRenderer`) — WebGL2 + runtime MSDF, post-fx. |
-| `fontuccine/vf` | Tier 0 only (`createVfRenderer`, `probeTier0`) — opportunistic variable-font `wdth`. |
-| `fontuccine/react` | The React wrapper (`<Fontuccine>`, `useFontuccine`). |
-
-The auto engine needs the font outline binary for the SVG/WebGL tiers; pass it
-via `fontUrl` / `fontBuffer` (opentype.js is loaded lazily, only when a binary is
-actually parsed — never in the base bundle). The VF tier needs no binary beyond
-`wdth`-axis detection.
-
-```ts
+```js
 import { Fontuccine } from 'fontuccine';
 
-const instance = Fontuccine.attach('#hero', {
-  trigger: 'scroll-velocity',
-  maxStretchRatio: 3,
-  fontUrl: '/fonts/MyFont.ttf',
+const stretch = Fontuccine.attach('#headline', {
+  fontUrl: '/fonts/RobotoFlex-VF.ttf',
+  axis: 'horizontal',
+  trigger: 'scroll-velocity',   // or 'mouse-proximity' | 'hover' | 'custom'
+  maxStretchRatio: 2.0,
 });
-// instance.tier → 'webgl' | 'svg' | 'vf' ; instance.notes → why
+
+// trigger:'custom' — drive it yourself (clamped to [min,max]):
+stretch.set(1.6);
+
+await stretch.ready;   // renderer attached
+stretch.tier;          // 'webgl' | 'svg' | 'vf' — what actually rendered
+stretch.notes;         // tier-selection + fall-through trail
+stretch.destroy();     // tear down + restore the DOM (leaks nothing)
 ```
+
+`attach(target, config)` takes a selector or an `Element` and returns an
+`Instance` (`set`, `destroy`, `tier`, `ready`, `notes`). The engine needs the
+font outline binary for the SVG/WebGL tiers — pass it via `fontUrl` or
+`fontBuffer`.
 
 ### React
 
-`react` / `react-dom` are peerDependencies. The wrapper is thin (props → config;
-no framework-specific animation logic), SSR-inert (attach runs in an effect), and
-React 18/19 StrictMode double-mount safe.
-
-```tsx
+```jsx
 import { Fontuccine, useFontuccine } from 'fontuccine/react';
 
-// component — the real text stays in the DOM for a11y/SEO
+// component — memoize `config` to avoid re-attaching
 <Fontuccine as="h1" config={{ trigger: 'hover', fontUrl: '/fonts/MyFont.ttf' }}>
-  Stretch me
+  Stretchy
 </Fontuccine>
 
-// or the hook on your own ref (memoize `config` to avoid re-attaching)
-const ref = useRef<HTMLHeadingElement>(null);
+// or the hook on your own ref
+const ref = useRef(null);
 useFontuccine(ref, { trigger: 'mouse-proximity' });
 ```
 
-**Vue and Svelte wrappers are deferred (FUTURE).** They will be equally thin
-adapters over the same `attach`/`destroy` interface — the engine already carries
-all animation logic, so a wrapper adds none. They are intentionally not built in
-this phase.
+`react` / `react-dom` are peer deps; the wrapper is SSR-inert and StrictMode
+double-mount safe.
 
-## Verify the math core right now
+## Render tiers
+
+One flex profile reduces to a **cumulative remap LUT** consumed identically by
+three renderers, so the look is stable across the fall-through ladder:
+
+| Tier | Backend | How it stretches |
+|---|---|---|
+| **1** | WebGL2 + runtime MSDF atlas | GPU slice-grid remap through the LUT texture; crisp at any ratio; supports `effects` (grain, aberration, displacement) |
+| **2** | SVG | béziers split at slice boundaries → per-slice affine = mathematically exact; the no-WebGL / fidelity path |
+| **0** | Native variable font | drives the font's real `wdth` axis — cheapest, when the font has one |
+
+`tier: 'auto'` (default) probes capability and picks the best available; every
+selection and fall-through reason lands on `instance.notes`. Import a tier
+directly via `fontuccine/webgl`, `fontuccine/svg`, or `fontuccine/vf`.
+
+> **Compression caveat:** under `tier:'webgl'` the effect is stretch-only — a
+> requested compression (effective stretch < 1) clamps to the glyph's natural
+> width. Use `tier:'svg'` when you need compression fidelity.
+
+## Key config
+
+| Option | Meaning |
+|---|---|
+| `axis` | `'horizontal' \| 'vertical' \| 'dual'` |
+| `maxStretchRatio` / `minStretchRatio` | stretch bounds |
+| `edgeProtection` | Pagurek's *k* — high = hard 9-slice (rigid edges), low = uniform |
+| `lutResolution` | slices per axis (analysis resolution) |
+| `trigger` | `'scroll-velocity' \| 'mouse-proximity' \| 'hover' \| 'custom'` |
+| `physics` / `easingCurve` | spring (`stiffness`/`damping`) or eased motion |
+| `effects` | Tier-1 only: `grain`, `aberration`, `displacement` |
+| `tier` | force a renderer; omit for auto |
+| `wrap` | `'nowrap' \| 'reserve'` — reserve layout so stretching doesn't reflow neighbors |
+| `respectReducedMotion` | honor `prefers-reduced-motion` |
+
+## Playground
+
+A Vite app that exercises every tier, effect, and parameter live (and doubles as
+the QA visual harness):
 
 ```bash
-cd refs/examples
+cd playground
 npm install
-node test-invariants.mjs      # 17 invariants — all pass
-node 08-real-font-demo.mjs    # regenerates demo-horizontal.png / demo-vertical.png
+npm run dev     # http://localhost:5173 — hot-reloads the engine source
 ```
 
-`demo-horizontal.png`: DejaVu Serif R/B/H at 2.5× — naive scaling fattens
-stems 2.5×; Fontuccine keeps stroke weight and serifs, stretching only
-aligned zones. `demo-vertical.png`: S/E at 2× vertical.
+## Develop
 
-## Roadmap (agents, in order)
+```bash
+npm install
+npm run build      # tsup → dist/ (ESM + .d.ts, per-tier entry points)
+npm test           # node --test — 147 tests
+npm run typecheck
+```
 
-1. **glyph-analysis-engineer** — productionize core: k-d tree, worker
-   protocol, self-intersection filtering, kerning in stretched space.
-2. **interaction-engineer** — ticker + stimuli + springs (unblocks demos).
-3. **dom-render-engineer** — SVG tier first (visible results, QA baseline),
-   then VF tier + a11y overlay.
-4. **gpu-render-engineer** — MSDF atlas + instanced renderer + post-fx.
-5. **packaging-engineer** — exports, wrappers, playground.
-6. **qa-perf-auditor** — gates every step (suite seeded by
-   `test-invariants.mjs`; it already caught one falsified optimization in R&D).
+## How it works
+
+`RESEARCH.md` documents the R&D behind the design — the tangent-aligned flex
+profile (Pagurek 2025), verified performance facts, the pipeline benchmark, and
+the risks. `refs/` holds the annotated sources and standalone reference
+implementations (flex profile, LUT remap, MSDF stretch shader).
+
+## License
+
+[MIT](LICENSE) © Charbel Malo

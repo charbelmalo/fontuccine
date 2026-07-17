@@ -37,13 +37,24 @@ export function detectWebGL2(createCanvas?: () => HTMLCanvasElement): WebGL2Supp
 
     if (!gl) return { supported: false, reason: 'no-webgl2-context' };
 
-    // R32F is core-renderable-optional but core-TEXTURABLE in WebGL2; verify the
-    // enum path exists (older polyfills lie about being WebGL2).
-    if (typeof gl.texStorage2D !== 'function' || typeof gl.drawElementsInstanced !== 'function') {
-      return { supported: false, reason: 'missing-webgl2-entrypoints' };
-    }
+    try {
+      // R32F is core-renderable-optional but core-TEXTURABLE in WebGL2; verify the
+      // enum path exists (older polyfills lie about being WebGL2).
+      if (typeof gl.texStorage2D !== 'function' || typeof gl.drawElementsInstanced !== 'function') {
+        return { supported: false, reason: 'missing-webgl2-entrypoints' };
+      }
 
-    return { supported: true };
+      return { supported: true };
+    } finally {
+      // The comment above promises "does NOT retain any context" — without this
+      // the throwaway context stays alive until GC, and every attach() call (the
+      // engine probes on each one) leaks a live context. Browsers cap concurrent
+      // WebGL contexts (~8-16), so repeated attach()/detach() cycles quickly hit
+      // "Too many active WebGL contexts" and the real shared context can get
+      // silently evicted. Force it lost immediately; the real shared backend
+      // (gl/shared.ts) creates its own context separately.
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+    }
   } catch (e) {
     return { supported: false, reason: `probe-threw:${(e as Error)?.message ?? 'unknown'}` };
   }
