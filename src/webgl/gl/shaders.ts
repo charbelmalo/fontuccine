@@ -29,7 +29,7 @@ in vec2 a_boxCoord;
 // Instanced, STATIC per-glyph attributes (uploaded once; never per frame).
 in float a_glyphOrigin;   // origin factor: inkLeft = u_origin + u_stretch*a_glyphOrigin
 in float a_glyphWidth;    // W = bounds.max - bounds.min (unstretched ink width, px)
-in vec2  a_glyphY;        // (yTop_px, height_px) vertical placement (no stretch)
+in vec2  a_glyphY;        // (yTop_px from run top, height_px) SVG-down placement (no stretch)
 in vec2  a_atlasUVOrigin; // atlas UV at box (0,0)  (image-space, may carry flipped V)
 in vec2  a_atlasUVSize;   // atlas UV delta across the box (size.y may be negative)
 in float a_lutRow;        // this glyph's row in the packed LUT texture
@@ -62,8 +62,10 @@ void main() {
 
   float inkLeft = u_origin + u_stretch * a_glyphOrigin;
   float posX = inkLeft + a_glyphWidth * remapped;
-  // box y=1 is the glyph top; place downward in device px (y-down screen space).
-  float posY = a_glyphY.x + (1.0 - a_boxCoord.y) * a_glyphY.y;
+  // Glyph geometry is SVG-down (y increases downward, like the SVG tier): box y=0
+  // is the glyph's visual top (bbox.minY), box y=1 its visual bottom (bbox.maxY).
+  // a_glyphY = (yTop_px = top offset from run top, height_px); place straight down.
+  float posY = a_glyphY.x + a_boxCoord.y * a_glyphY.y;
 
   v_atlasUV = a_atlasUVOrigin + a_boxCoord * a_atlasUVSize;
 

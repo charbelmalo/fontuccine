@@ -186,7 +186,7 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
       originFactor: prefix + g.bounds.min,
       width: g.bounds.max - g.bounds.min,
       bounds: { min: g.bounds.min, max: g.bounds.max },
-      yTop: maxAscent - g.bbox.maxY,
+      yTop: g.bbox.minY - minDescent,
       height: g.bbox.maxY - g.bbox.minY,
       cumFlex: buildFlexCumulative(g.flex),
       glyphKey: g.char ?? `g${i}`,
