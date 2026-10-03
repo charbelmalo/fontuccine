@@ -18,6 +18,12 @@ import type { RenderBackend } from '../webgl/gl/device.ts';
 import type { Tier, ResolvedTier } from './tier-select.ts';
 
 export type { Tier, ResolvedTier } from './tier-select.ts';
+/**
+ * Stretch axis. **Only `'horizontal'` is rendered in 0.1.x.** `'vertical'` and
+ * `'dual'` are accepted for forward compatibility (the math core can analyse a
+ * y-axis field) but none of the three renderers applies a vertical remap yet;
+ * passing either logs a one-time `console.warn` and renders horizontally.
+ */
 export type StretchAxis = 'horizontal' | 'vertical' | 'dual';
 export type Trigger = 'scroll-velocity' | 'mouse-proximity' | 'hover' | 'custom';
 
@@ -29,6 +35,7 @@ export type FontSource =
 
 export interface FontuccineConfig {
   // ─────────────── documented public schema (README.md) ───────────────
+  /** Only `'horizontal'` is implemented in 0.1.x — see {@link StretchAxis}. */
   axis?: StretchAxis;
   trigger?: Trigger;
 
@@ -38,6 +45,13 @@ export interface FontuccineConfig {
   edgeProtection?: number;
   /** Slices per axis (analysis LUT resolution). */
   lutResolution?: number;
+  /**
+   * Cap on the share of the total growth a single slice may absorb, as a
+   * multiple of its even share (1/slices). Default 4. Keeps diagonal-only
+   * glyphs (`w`, `v`, `y`) from collapsing their apexes into a slab at high
+   * ratios; `Infinity` disables the cap (raw tangent-aligned profile).
+   */
+  maxShareFactor?: number;
 
   physics?: { stiffness?: number; damping?: number };
   easingCurve?: string;
@@ -76,6 +90,27 @@ export interface FontuccineConfig {
   wdthAxis?: WdthAxis | null;
   /** Font units per em the outlines are emitted in. Default 1000. */
   unitsPerEm?: number;
+  /**
+   * Variable-font instance the SVG/WebGL tiers render, in user axis units
+   * (`{ wght: 700, wdth: 100, opsz: 128 }`). Default: resolved from the
+   * element's computed `font-weight` / `font-stretch` / `font-style` /
+   * `font-optical-sizing` / `font-variation-settings`, i.e. the same instance
+   * the browser draws for that element. Pass `false` to force the font file's
+   * default instance. Static fonts ignore it. (TrueType `gvar` fonts only —
+   * CFF2 fonts render their default instance; see README.)
+   */
+  fontVariations?: Record<string, number> | false;
+
+  /**
+   * Ink match with the host's native text rasteriser. Browsers draw text a
+   * fraction of a pixel bolder than its outline (Skia contrast boost; macOS
+   * font smoothing), so the outline-exact WebGL/SVG tiers read lighter than the
+   * text they replace. `'auto'` (default) measures the difference once per
+   * font/size/colour/DPR with an offscreen canvas probe and dilates the tiers'
+   * ink to match; a number forces that dilation in CSS px per edge; `0`
+   * renders the exact outline. Ignored by the VF tier (native text already).
+   */
+  inkDilation?: 'auto' | number;
 
   /** Shared ticker (defaults to the library singleton). */
   ticker?: Ticker;

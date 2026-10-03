@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
  * dist — so editing the engine hot-reloads here with no rebuild step. Vite's
  * esbuild handles the explicit `.ts` import extensions the source uses, and the
  * `new Worker(new URL('./analysis-worker.ts', import.meta.url), {type:'module'})`
- * pattern in worker/client.ts is Vite's first-class worker syntax (real off-main
+ * pattern in worker/spawn-analysis-worker.ts (and webgl/msdf/spawn-msdf-worker.ts) is Vite's first-class worker syntax (real off-main
  * -thread analysis in the browser, exactly as production ships it).
  */
 const src = (p: string) => fileURLToPath(new URL(`../src/${p}`, import.meta.url));

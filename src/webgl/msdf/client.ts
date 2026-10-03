@@ -4,7 +4,10 @@
  * Mirrors the analysis-core `AnalysisClient` (src/worker/client.ts): spawns the
  * MSDF worker (or a caller-injected one), matches responses by id, LRU-caches
  * generated bitmaps keyed by (glyphId, fontSize, pxRange, dpr), and falls back
- * to a synchronous INLINE call when no Worker is available (SSR / tests). MSDF
+ * to a synchronous INLINE call when no Worker is available (SSR / tests) — or at
+ * RUNTIME when spawning throws or the worker fires `error`/`messageerror` (its
+ * script failed to load): the worker is terminated and every pending + future
+ * request is served inline on the main thread (`mode`/`reason` report it). MSDF
  * for a glyph at a raster size is static, so cache hits are always valid; a DPR
  * change changes the key, which drives the lazy re-raster (obligation 6).
  */
@@ -12,12 +15,17 @@ import type { PathCommand } from '../../core/types.ts';
 import type { MSDFOptions, MSDFBitmap } from './generator.ts';
 import type { MsdfRequest, MsdfResponse } from './worker.ts';
 import { handleMsdfRequest } from './worker.ts';
+import { spawnMsdfWorker } from './spawn-msdf-worker.ts';
+import { describeWorkerError } from '../../worker/worker-error.ts';
+import type { ClientMode } from '../../worker/worker-error.ts';
 
 export interface MsdfClientOptions {
   workerFactory?: () => Worker;
   inline?: boolean;
   /** Max cached bitmaps (LRU). Default 512. */
   cacheSize?: number;
+  /** Called once if the client degrades to the main thread (with the reason). */
+  onFallback?: (reason: string) => void;
 }
 
 export interface MsdfGlyphInput {
@@ -29,6 +37,7 @@ export interface MsdfGlyphInput {
 }
 
 interface Pending {
+  req: MsdfRequest;
   resolve: (b: MSDFBitmap) => void;
   reject: (e: unknown) => void;
 }
@@ -45,6 +54,7 @@ export class MsdfClient {
   private readonly cacheSize: number;
   private nextId = 1;
   private inline: boolean;
+  private _reason: string | undefined;
   private readonly opts: MsdfClientOptions;
 
   constructor(opts: MsdfClientOptions = {}) {
@@ -52,32 +62,79 @@ export class MsdfClient {
     this.cacheSize = opts.cacheSize ?? 512;
     const canSpawn = !!opts.workerFactory || (typeof Worker !== 'undefined' && !opts.inline);
     this.inline = !canSpawn || !!opts.inline;
+    if (this.inline && !opts.inline) this._reason = 'Worker is not available in this environment';
+  }
+
+  /** 'worker' while rasterization runs (or will run) off-thread; 'inline' once on the main thread. */
+  get mode(): ClientMode {
+    return this.inline ? 'inline' : 'worker';
+  }
+
+  /** Why the client is running inline (undefined when inline was requested or a worker is in use). */
+  get reason(): string | undefined {
+    return this._reason;
+  }
+
+  /** Mark the worker dead, terminate it, and serve all pending requests inline. */
+  private fallBack(reason: string): void {
+    if (this.inline) return;
+    this.inline = true;
+    this._reason = reason;
+    const w = this.worker;
+    this.worker = null;
+    if (w) {
+      w.onmessage = null;
+      w.onerror = null;
+      w.onmessageerror = null;
+      try {
+        w.terminate();
+      } catch {
+        /* already gone */
+      }
+    }
+    const pending = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of pending) {
+      try {
+        p.resolve(handleMsdfRequest(p.req).bitmap);
+      } catch (err) {
+        p.reject(err);
+      }
+    }
+    try {
+      this.opts.onFallback?.(reason);
+    } catch {
+      /* a throwing listener must not break rasterization */
+    }
   }
 
   private ensureWorker(): Worker | null {
     if (this.inline) return null;
     if (this.worker) return this.worker;
+    let worker: Worker;
     try {
-      this.worker = this.opts.workerFactory
-        ? this.opts.workerFactory()
-        : new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-      this.worker.onmessage = (ev: MessageEvent) => {
-        const res = ev.data as MsdfResponse;
-        const p = this.pending.get(res.id);
-        if (p) {
-          this.pending.delete(res.id);
-          p.resolve(res.bitmap);
-        }
-      };
-      this.worker.onerror = (err: unknown) => {
-        for (const [, p] of this.pending) p.reject(err);
-        this.pending.clear();
-      };
-    } catch {
-      this.inline = true;
-      this.worker = null;
+      worker = this.opts.workerFactory ? this.opts.workerFactory() : spawnMsdfWorker();
+    } catch (err) {
+      this.fallBack(`worker spawn failed: ${describeWorkerError(err)}`);
+      return null;
     }
-    return this.worker;
+    this.worker = worker;
+    worker.onmessage = (ev: MessageEvent) => {
+      const res = ev.data as MsdfResponse;
+      const p = this.pending.get(res.id);
+      if (p) {
+        this.pending.delete(res.id);
+        p.resolve(res.bitmap);
+      }
+    };
+    worker.onerror = (err: unknown) => {
+      (err as { preventDefault?: () => void } | null)?.preventDefault?.();
+      this.fallBack(`worker error: ${describeWorkerError(err)}`);
+    };
+    worker.onmessageerror = (err: unknown) => {
+      this.fallBack(`worker messageerror: ${describeWorkerError(err)}`);
+    };
+    return worker;
   }
 
   private cacheGet(key: string): MSDFBitmap | undefined {
@@ -126,13 +183,18 @@ export class MsdfClient {
 
     return new Promise<MSDFBitmap>((resolve, reject) => {
       this.pending.set(id, {
+        req,
         resolve: (b) => {
           this.cacheSet(key, b);
           resolve(b);
         },
         reject,
       });
-      worker.postMessage(req);
+      try {
+        worker.postMessage(req);
+      } catch (err) {
+        this.fallBack(`worker postMessage failed: ${describeWorkerError(err)}`);
+      }
     });
   }
 

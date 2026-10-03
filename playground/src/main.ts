@@ -76,7 +76,7 @@ const controls: Ctl[] = [
 
   { kind: 'title', label: 'Trigger & motion' },
   { kind: 'select', key: 'trigger', label: 'trigger', options: ['custom', 'hover', 'mouse-proximity', 'scroll-velocity'], get: () => state.trigger!, set: (v) => (state.trigger = v as UIState['trigger']) },
-  { kind: 'range', key: 'manual', label: 'manual .set() (custom)', min: 1, max: 6, step: 0.05, get: () => state.manual, set: (v) => (state.manual = v) },
+  { kind: 'range', key: 'manual', label: 'manual .set() (custom)', min: 0.5, max: 6, step: 0.05, get: () => state.manual, set: (v) => (state.manual = v) },
   { kind: 'range', key: 'stiffness', label: 'spring stiffness', min: 20, max: 400, step: 5, get: () => state.physics!.stiffness!, set: (v) => (state.physics = { ...state.physics, stiffness: v }) },
   { kind: 'range', key: 'damping', label: 'spring damping', min: 4, max: 60, step: 1, get: () => state.physics!.damping!, set: (v) => (state.physics = { ...state.physics, damping: v }) },
   { kind: 'range', key: 'proximityRadius', label: 'proximityRadius', min: 40, max: 600, step: 10, get: () => state.proximityRadius!, set: (v) => (state.proximityRadius = v) },
@@ -93,7 +93,7 @@ const controls: Ctl[] = [
   { kind: 'range', key: 'aberration', label: 'aberration max', min: 0, max: 6, step: 0.1, get: () => state.effects!.aberration?.max ?? 0, set: (v) => (state.effects = { ...state.effects, aberration: { max: v, fromVelocity: true } }) },
 ];
 
-function renderControls(root: HTMLElement, onChange: () => void) {
+function renderControls(root: HTMLElement, onChange: (key: string) => void) {
   root.innerHTML = '';
   for (const c of controls) {
     if (c.kind === 'title') {
@@ -115,24 +115,24 @@ function renderControls(root: HTMLElement, onChange: () => void) {
       input.type = 'range';
       input.min = String(c.min); input.max = String(c.max); input.step = String(c.step);
       input.value = String(c.get());
-      input.oninput = () => { c.set(parseFloat(input.value)); val.textContent = input.value; onChange(); };
+      input.oninput = () => { c.set(parseFloat(input.value)); val.textContent = input.value; onChange(c.key); };
       wrap.append(lab, input);
     } else if (c.kind === 'select') {
       const lab = document.createElement('label'); lab.innerHTML = `<span>${c.label}</span>`;
       const sel = document.createElement('select');
       for (const o of c.options) { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; sel.appendChild(opt); }
       sel.value = c.get();
-      sel.onchange = () => { c.set(sel.value); onChange(); };
+      sel.onchange = () => { c.set(sel.value); onChange(c.key); };
       wrap.append(lab, sel);
     } else if (c.kind === 'check') {
       const input = document.createElement('input'); input.type = 'checkbox'; input.checked = c.get();
       const lab = document.createElement('label'); lab.innerHTML = `<span>${c.label}</span>`;
-      input.onchange = () => { c.set(input.checked); onChange(); };
+      input.onchange = () => { c.set(input.checked); onChange(c.key); };
       wrap.append(input, lab);
     } else {
       const lab = document.createElement('label'); lab.innerHTML = `<span>${c.label}</span>`;
       const input = document.createElement('input'); input.type = 'text'; input.value = c.get();
-      input.onchange = () => { c.set(input.value); onChange(); };
+      input.onchange = () => { c.set(input.value); onChange(c.key); };
       wrap.append(lab, input);
     }
     root.appendChild(wrap);
@@ -143,13 +143,14 @@ function renderControls(root: HTMLElement, onChange: () => void) {
 let single: Instance | null = null;
 async function rebuildSingle() {
   const hero = document.getElementById('hero') as HTMLElement;
-  hero.textContent = state.text;
   single?.destroy();
-  single = Fontuccine.attach(hero, cfg());
-  await single.ready;
-  (document.getElementById('tier-badge') as HTMLElement).textContent = single.tier ?? '—';
-  (document.getElementById('notes') as HTMLElement).textContent = single.notes.join('\n') || '(no notes)';
-  if (state.trigger === 'custom') single.set(state.manual);
+  hero.textContent = state.text;
+  const inst = (single = Fontuccine.attach(hero, cfg()));
+  await inst.ready;
+  if (inst !== single) return; // superseded by a newer rebuild while loading
+  (document.getElementById('tier-badge') as HTMLElement).textContent = inst.tier ?? '—';
+  (document.getElementById('notes') as HTMLElement).textContent = inst.notes.join('\n') || '(no notes)';
+  if (state.trigger === 'custom') inst.set(state.manual);
 }
 
 // ── comparison view ──────────────────────────────────────────────────────────
@@ -182,16 +183,28 @@ function applyMode() {
   (document.getElementById('compare') as HTMLElement).hidden = mode !== 'compare';
   for (const b of document.querySelectorAll<HTMLButtonElement>('.modes button'))
     b.classList.toggle('active', b.dataset.mode === mode);
-  if (mode === 'single') void rebuildSingle();
-  else void rebuildCompare();
-}
-
-function onChange() {
+  // Tear down the view being left so its instances (and WebGL surfaces) don't
+  // keep running hidden underneath the visible one.
   if (mode === 'single') {
-    // manual slider is cheap — just drive; everything else re-attaches.
+    for (const [, inst] of cmpInstances) inst.destroy();
+    cmpInstances.clear();
     void rebuildSingle();
   } else {
-    driveCompare();
+    single?.destroy();
+    single = null;
+    void rebuildCompare();
+  }
+}
+
+function onChange(key: string) {
+  // manual slider is cheap — just drive; everything else re-attaches.
+  if (key === 'manual') {
+    if (mode === 'single') single?.set(state.manual);
+    else driveCompare();
+  } else if (mode === 'single') {
+    void rebuildSingle();
+  } else {
+    void rebuildCompare();
   }
 }
 

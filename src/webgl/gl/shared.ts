@@ -34,13 +34,19 @@ function defaultFactory(slices: number): RenderBackend | null {
   const canvas = document.createElement('canvas');
   canvas.setAttribute('data-fontuccine', 'webgl-shared');
   canvas.setAttribute('aria-hidden', 'true');
+  // Offscreen scratch surface: every renderer draws its run here (scissored)
+  // and blits the pixels into a canvas that lives INSIDE its host, so the ink
+  // takes part in the host's own stacking context (under modals, clipped by the
+  // page's overflow rules) instead of floating above the whole page.
   Object.assign(canvas.style, {
     position: 'fixed',
-    inset: '0',
-    width: '100%',
-    height: '100%',
+    left: '0',
+    top: '0',
+    width: '1px',
+    height: '1px',
+    opacity: '0',
+    visibility: 'hidden',
     pointerEvents: 'none',
-    zIndex: '2147483646',
   } as CSSStyleDeclaration);
   document.body?.appendChild(canvas);
   const b = new WebGL2Backend(canvas, slices);

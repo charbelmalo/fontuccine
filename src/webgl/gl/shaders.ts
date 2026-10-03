@@ -33,6 +33,8 @@ in vec2  a_glyphY;        // (yTop_px from run top, height_px) SVG-down placemen
 in vec2  a_atlasUVOrigin; // atlas UV at box (0,0)  (image-space, may carry flipped V)
 in vec2  a_atlasUVSize;   // atlas UV delta across the box (size.y may be negative)
 in float a_lutRow;        // this glyph's row in the packed LUT texture
+in vec2  a_quadX;         // (padLeft, padRight) beyond the ink box, in ink-width units
+in vec2  a_quadY;         // (padTop, padBottom) beyond the ink box, in ink-height units
 
 uniform sampler2D u_lut;      // R32F, (N+1) x glyphCount, NEAREST; holds C(u)
 uniform ivec2 u_lutSize;      // (N+1, glyphCount)
@@ -55,7 +57,14 @@ float sampleCumFlex(float u, int row) {
 }
 
 void main() {
-  float uOrig = a_boxCoord.x;                       // original normalized column
+  // Interior grid columns sit exactly on the LUT slice boundaries (u in [0,1] of
+  // the INK box). The two outermost columns / the two rows are pushed out over
+  // the bitmap padding so the quad also carries the anti-aliasing ramp; there
+  // C(u) is constant (0 or 1), so the extension is an exact linear continuation.
+  float bx = a_boxCoord.x;
+  float by = a_boxCoord.y;
+  float uOrig = bx <= 0.0 ? -a_quadX.x : (bx >= 1.0 ? 1.0 + a_quadX.y : bx);
+  float vOrig = by <= 0.0 ? -a_quadY.x : (by >= 1.0 ? 1.0 + a_quadY.y : by);
   float C = sampleCumFlex(uOrig, int(a_lutRow + 0.5));
   // remapped normalized position: identity at stretch=1, flex-weighted growth.
   float remapped = uOrig + (u_stretch - 1.0) * C;
@@ -65,9 +74,9 @@ void main() {
   // Glyph geometry is SVG-down (y increases downward, like the SVG tier): box y=0
   // is the glyph's visual top (bbox.minY), box y=1 its visual bottom (bbox.maxY).
   // a_glyphY = (yTop_px = top offset from run top, height_px); place straight down.
-  float posY = a_glyphY.x + a_boxCoord.y * a_glyphY.y;
+  float posY = a_glyphY.x + vOrig * a_glyphY.y;
 
-  v_atlasUV = a_atlasUVOrigin + a_boxCoord * a_atlasUVSize;
+  v_atlasUV = a_atlasUVOrigin + vec2(uOrig, vOrig) * a_atlasUVSize;
 
   vec2 clip = vec2(posX / u_viewport.x * 2.0 - 1.0, 1.0 - posY / u_viewport.y * 2.0);
   gl_Position = vec4(clip, 0.0, 1.0);
@@ -88,6 +97,7 @@ uniform vec2  u_atlasSize;     // atlas texture size (texels)
 // Post-fx (all optional; each is a no-op branch when its scalar is ~0).
 uniform float u_grainIntensity;   // 0..1 film grain
 uniform float u_aberration;       // channel split (px), ∝ velocity
+uniform float u_inkDilate;        // extra ink per edge (device px) — matches the native text rasteriser
 uniform vec2  u_stretchDir;       // unit vector of the active stretch axis
 uniform float u_time;
 uniform float u_dispIntensity;    // displacement warp strength (px)
@@ -117,15 +127,15 @@ void main() {
   if (u_aberration > 0.001) {
     // Chromatic aberration: split channels along the stretch axis.
     vec2 off = u_stretchDir * u_aberration / u_atlasSize;
-    float r = clamp(sampleSD(uv - off) * screenPxRange + 0.5, 0.0, 1.0);
-    float g = clamp(sampleSD(uv)       * screenPxRange + 0.5, 0.0, 1.0);
-    float b = clamp(sampleSD(uv + off) * screenPxRange + 0.5, 0.0, 1.0);
+    float r = clamp(sampleSD(uv - off) * screenPxRange + 0.5 + u_inkDilate, 0.0, 1.0);
+    float g = clamp(sampleSD(uv)       * screenPxRange + 0.5 + u_inkDilate, 0.0, 1.0);
+    float b = clamp(sampleSD(uv + off) * screenPxRange + 0.5 + u_inkDilate, 0.0, 1.0);
     float a = max(max(r, g), b) * u_color.a;
     // premultiplied output
     fragColor = vec4(u_color.rgb * vec3(r, g, b) * u_color.a, a);
     alpha = a;
   } else {
-    float d = clamp(sampleSD(uv) * screenPxRange + 0.5, 0.0, 1.0);
+    float d = clamp(sampleSD(uv) * screenPxRange + 0.5 + u_inkDilate, 0.0, 1.0);
     alpha = d * u_color.a;
     fragColor = vec4(u_color.rgb * alpha, alpha); // premultiplied
   }

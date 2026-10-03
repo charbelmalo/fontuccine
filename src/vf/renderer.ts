@@ -151,16 +151,39 @@ export function createVfRenderer(options: VfRendererOptions): VfRenderer {
   const unsubs: Array<() => void> = [];
   let resizeObserver: ResizeObserver | null = null;
   let scrollHandler: (() => void) | null = null;
+  /** The reserved box width (px) we last wrote as `min-width`. */
+  let writtenMinWidth: number | null = null;
+
+  /**
+   * Natural width: resting stretch, no reserve. Our own `min-width` and the live
+   * stretch both inflate the box, so both are cleared for the measurement and
+   * restored right after — otherwise every re-measure multiplies the previous
+   * reserve by the factor again (runaway growth to millions of px).
+   */
+  function measureNaturalWidth(): number {
+    const prop = apply === 'font-variation-settings' ? 'font-variation-settings' : 'font-stretch';
+    const prevMin = host.style.getPropertyValue('min-width');
+    const prevMinPrio = host.style.getPropertyPriority('min-width');
+    const prevWdth = host.style.getPropertyValue(prop);
+    const prevWdthPrio = host.style.getPropertyPriority(prop);
+    if (prevMin) host.style.removeProperty('min-width');
+    writeWidth(host, apply, mapping.toPercent(restingStretch));
+    const w = host.getBoundingClientRect().width;
+    if (prevWdth) host.style.setProperty(prop, prevWdth, prevWdthPrio);
+    else host.style.removeProperty(prop);
+    if (prevMin) host.style.setProperty('min-width', prevMin, prevMinPrio);
+    return w;
+  }
 
   /** READ phase: measure natural width once (for 'reserve'), cached. */
   function readPhase(): void {
     if (wrap !== 'reserve' || !dirty) return;
     dirty = false;
-    // Measure at natural width: reserve BEFORE the first stretch is painted,
-    // then reserve the widest box the axis can reach (axis.max %) so downstream
-    // layout never shifts mid-interaction. Approximate (advance widths are
-    // designer-drawn, not linear), matching the overlay's reserve semantics.
-    const w = host.getBoundingClientRect().width;
+    // Measure at natural width (reserve cleared, stretch at rest), then reserve
+    // the widest box the axis can reach (axis.max %) so downstream layout never
+    // shifts mid-interaction. Approximate (advance widths are designer-drawn,
+    // not linear), matching the overlay's reserve semantics.
+    const w = measureNaturalWidth();
     if (Number.isFinite(w) && w > 0) {
       reservedFrom = w;
       let factor: number;
@@ -173,7 +196,8 @@ export function createVfRenderer(options: VfRendererOptions): VfRenderer {
         const restPct = mapping.toPercent(restingStretch);
         factor = restPct > 0 ? axis.max / restPct : axis.max / 100;
       }
-      host.style.setProperty('min-width', `${w * factor}px`);
+      writtenMinWidth = w * factor;
+      host.style.setProperty('min-width', `${writtenMinWidth}px`);
     }
   }
 
@@ -212,6 +236,15 @@ export function createVfRenderer(options: VfRendererOptions): VfRenderer {
     if (wrap === 'reserve') {
       if (typeof ResizeObserver !== 'undefined') {
         resizeObserver = new ResizeObserver(() => {
+          // Ignore the notification caused by our own reserve write (the box
+          // now equals the width we just set): the natural width is unchanged,
+          // and re-measuring on it used to feed a grow-every-frame loop.
+          if (
+            writtenMinWidth !== null &&
+            Math.abs(host.getBoundingClientRect().width - writtenMinWidth) < 0.5
+          ) {
+            return;
+          }
           dirty = true;
           ticker.wake();
         });
@@ -251,6 +284,7 @@ export function createVfRenderer(options: VfRendererOptions): VfRenderer {
     else host.removeAttribute('style');
     attached = false;
     reservedFrom = null;
+    writtenMinWidth = null;
     lastPct = Number.NaN;
   }
 

@@ -47,10 +47,12 @@ test('render layer is aria-hidden + pointer/selection inert', () => {
   assert.equal(svg.style.position, 'absolute');
 });
 
-test('host gets layout+paint containment and isolation', () => {
+test('host gets layout containment (no paint clipping) and isolation', () => {
   const { doc, host, svg } = setup('<h1 id="hero">Hi</h1>');
   createOverlay({ host, renderLayer: svg, document: doc });
-  assert.equal(host.style.contain, 'layout paint');
+  // `paint` containment clipped the stretched run at the host box in
+  // shrink-wrapped hosts (inline-block / flex items); only `layout` remains.
+  assert.equal(host.style.contain, 'layout');
   assert.equal(host.style.isolation, 'isolate');
   assert.equal(host.style.position, 'relative', 'positioning context for the layer');
 });
@@ -131,4 +133,26 @@ test('destroy() restores the original DOM and styles', () => {
   assert.equal(svg.parentNode, null, 'render layer removed');
   assert.equal(host.getAttribute('style'), beforeStyle, 'inline styles restored');
   assert.equal(svg.getAttribute('aria-hidden'), null, 'aria-hidden cleaned up');
+});
+
+test('showText()/hideText(): real text stays readable until the render layer paints', () => {
+  const { doc, host, svg } = setup('<h1 id="hero" style="color: red">STRETCH</h1>');
+  const beforeStyle = host.getAttribute('style');
+  const overlay = createOverlay({ host, renderLayer: svg, document: doc });
+  const s = overlay.textLayer.style;
+  assert.equal(s.color, 'transparent', 'hidden by default (synchronous tiers)');
+  overlay.showText(); // async tier: nothing painted yet
+  assert.equal(s.color, '', 'text inherits the host colour again (visible)');
+  assert.match(s.getPropertyValue('user-select'), /text/, 'still selectable');
+  overlay.showText(); // idempotent
+  assert.equal(s.color, '');
+  overlay.hideText(); // first frame landed
+  assert.equal(s.color, 'transparent');
+  overlay.hideText();
+  assert.equal(s.color, 'transparent', 'idempotent');
+  overlay.showText();
+  overlay.destroy();
+  assert.equal(host.textContent, 'STRETCH');
+  assert.equal(host.querySelector('[data-fontuccine="text"]'), null, 'no leftover text layer');
+  assert.equal(host.getAttribute('style'), beforeStyle, 'host colour/styles restored');
 });

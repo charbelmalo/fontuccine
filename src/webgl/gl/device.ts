@@ -52,6 +52,8 @@ export interface FrameParams {
   atlasSize: number;
   grain: number;
   aberration: number;
+  /** Extra ink per edge in device px (ink calibration); 0 = exact outline. */
+  inkDilate?: number;
   stretchDir: [number, number];
   time: number;
   dispIntensity: number;
@@ -99,7 +101,7 @@ export interface RenderBackend {
 
 // ── real WebGL2 backend (inspection-verified; no headless GL to run it) ───────
 
-const FLOATS_PER_INSTANCE = 9;
+const FLOATS_PER_INSTANCE = 13;
 
 interface GlProgramState {
   program: WebGLProgram;
@@ -163,6 +165,8 @@ class WebGL2Run implements RunHandle {
     attr('a_atlasUVOrigin', 2, 4);
     attr('a_atlasUVSize', 2, 6);
     attr('a_lutRow', 1, 8);
+    attr('a_quadX', 2, 9);
+    attr('a_quadY', 2, 11);
 
     // per-run LUT texture (R32F, width=N+1, height=glyphCount), NEAREST
     if (!this.lutTex) this.lutTex = gl.createTexture();
@@ -201,6 +205,10 @@ class WebGL2Run implements RunHandle {
     gl.enable(gl.SCISSOR_TEST);
     gl.scissor(dx, sy, dw, dh);
     gl.viewport(dx, sy, dw, dh);
+    // Every run owns its region: clear it (scissored) so hosts that share the
+    // surface within one frame never see each other's ink.
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
 
     // premultiplied-alpha blending over arbitrary page backgrounds.
     gl.enable(gl.BLEND);
@@ -215,6 +223,7 @@ class WebGL2Run implements RunHandle {
     gl.uniform2f(u.u_atlasSize!, st.atlasSize, st.atlasSize);
     gl.uniform1f(u.u_grainIntensity!, p.grain);
     gl.uniform1f(u.u_aberration!, p.aberration);
+    gl.uniform1f(u.u_inkDilate!, p.inkDilate ?? 0);
     gl.uniform2f(u.u_stretchDir!, p.stretchDir[0], p.stretchDir[1]);
     gl.uniform1f(u.u_time!, p.time);
     gl.uniform1f(u.u_dispIntensity!, p.dispIntensity);
@@ -339,7 +348,7 @@ export class WebGL2Backend implements RenderBackend {
 
     const uNames = [
       'u_lut', 'u_lutSize', 'u_stretch', 'u_origin', 'u_viewport', 'u_msdfAtlas',
-      'u_color', 'u_pxRange', 'u_atlasSize', 'u_grainIntensity', 'u_aberration',
+      'u_color', 'u_pxRange', 'u_atlasSize', 'u_grainIntensity', 'u_aberration', 'u_inkDilate',
       'u_stretchDir', 'u_time', 'u_dispIntensity', 'u_dispScale', 'u_noise', 'u_hasNoise',
     ];
     const uniforms: Record<string, WebGLUniformLocation | null> = {};
@@ -460,8 +469,19 @@ export class WebGL2Backend implements RenderBackend {
       if (this.state.atlasTex) gl.deleteTexture(this.state.atlasTex);
     }
     if (gl && this.noiseTex) gl.deleteTexture(this.noiseTex);
+    // Freeing the GL objects is not enough: the browser keeps the context (and
+    // its canvas) alive until it is explicitly lost, and caps live contexts at
+    // ~16 per page. Release the context and drop the hidden canvas so a rebuild
+    // that releases the last instance leaks neither. (Listeners are already
+    // removed, so the forced loss does not reach renderers.) getExtension is
+    // optional-called because test fakes may not implement it.
+    if (gl) gl.getExtension?.('WEBGL_lose_context')?.loseContext();
+    const canvas = this.canvas as HTMLCanvasElement & { remove?: () => void };
+    if (typeof canvas.remove === 'function') canvas.remove();
+    else canvas.parentNode?.removeChild(canvas);
     this.lostCbs.clear();
     this.restoredCbs.clear();
+    this.noiseTex = null;
     this.state = null;
     this.gl = null;
   }

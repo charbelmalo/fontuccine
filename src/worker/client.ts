@@ -7,11 +7,21 @@
  *    once. Analysis is static, so cache hits are always valid.
  *  - Synchronous INLINE FALLBACK (calls analyzeGlyph directly) when no Worker
  *    is available — SSR, tests, or environments without Worker support.
+ *  - RUNTIME FALLBACK: if spawning throws, or the worker fires `error` /
+ *    `messageerror` (e.g. its script 404s or fails to load under a consumer's
+ *    bundler), the worker is marked dead + terminated and every pending and
+ *    future request is served inline on the main thread. `mode` / `reason`
+ *    expose this so the engine can surface it in `instance.notes`.
  *  - Never touches the DOM and never forces layout.
  */
 import type { AnalyzeRequest, AnalyzeResponse, AnalyzeParams, Axis, PathCommand } from '../core/types.ts';
 import { DEFAULT_PARAMS } from '../core/types.ts';
 import { analyzeGlyph } from './analyze.ts';
+import { spawnAnalysisWorker } from './spawn-analysis-worker.ts';
+import { describeWorkerError } from './worker-error.ts';
+import type { ClientMode } from './worker-error.ts';
+
+export type { ClientMode } from './worker-error.ts';
 
 export interface AnalysisClientOptions {
   /** Provide a Worker instance factory; omit to use the inline fallback. */
@@ -20,6 +30,8 @@ export interface AnalysisClientOptions {
   inline?: boolean;
   /** Max cached glyph/axis analyses (LRU). Default 512. */
   cacheSize?: number;
+  /** Called once if the client degrades to the main thread (with the reason). */
+  onFallback?: (reason: string) => void;
 }
 
 export interface AnalyzeGlyphInput {
@@ -31,6 +43,7 @@ export interface AnalyzeGlyphInput {
 }
 
 interface Pending {
+  req: AnalyzeRequest;
   resolve: (r: AnalyzeResponse) => void;
   reject: (e: unknown) => void;
 }
@@ -46,6 +59,7 @@ export class AnalysisClient {
   private readonly cacheSize: number;
   private nextId = 1;
   private inline: boolean;
+  private _reason: string | undefined;
   private readonly opts: AnalysisClientOptions;
 
   constructor(opts: AnalysisClientOptions = {}) {
@@ -53,33 +67,82 @@ export class AnalysisClient {
     this.cacheSize = opts.cacheSize ?? 512;
     const canSpawn = !!opts.workerFactory || (typeof Worker !== 'undefined' && !opts.inline);
     this.inline = !canSpawn || !!opts.inline;
+    // An explicit `inline: true` is a choice, not a degradation → no reason.
+    if (this.inline && !opts.inline) this._reason = 'Worker is not available in this environment';
+  }
+
+  /** 'worker' while analysis runs (or will run) off-thread; 'inline' once on the main thread. */
+  get mode(): ClientMode {
+    return this.inline ? 'inline' : 'worker';
+  }
+
+  /** Why the client is running inline (undefined when inline was requested or a worker is in use). */
+  get reason(): string | undefined {
+    return this._reason;
+  }
+
+  /** Mark the worker dead, terminate it, and serve all pending requests inline. */
+  private fallBack(reason: string): void {
+    if (this.inline) return;
+    this.inline = true;
+    this._reason = reason;
+    const w = this.worker;
+    this.worker = null;
+    if (w) {
+      w.onmessage = null;
+      w.onerror = null;
+      w.onmessageerror = null;
+      try {
+        w.terminate();
+      } catch {
+        /* already gone */
+      }
+    }
+    const pending = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of pending) {
+      try {
+        p.resolve(analyzeGlyph(p.req));
+      } catch (err) {
+        p.reject(err);
+      }
+    }
+    try {
+      this.opts.onFallback?.(reason);
+    } catch {
+      /* a throwing listener must not break analysis */
+    }
   }
 
   private ensureWorker(): Worker | null {
     if (this.inline) return null;
     if (this.worker) return this.worker;
+    let worker: Worker;
     try {
-      this.worker = this.opts.workerFactory
-        ? this.opts.workerFactory()
-        : new Worker(new URL('./analysis-worker.ts', import.meta.url), { type: 'module' });
-      this.worker.onmessage = (ev: MessageEvent) => {
-        const res = ev.data as AnalyzeResponse;
-        const p = this.pending.get(res.id);
-        if (p) {
-          this.pending.delete(res.id);
-          p.resolve(res);
-        }
-      };
-      this.worker.onerror = (err: unknown) => {
-        for (const [, p] of this.pending) p.reject(err);
-        this.pending.clear();
-      };
-    } catch {
+      worker = this.opts.workerFactory ? this.opts.workerFactory() : spawnAnalysisWorker();
+    } catch (err) {
       // Worker construction failed → permanently fall back to inline.
-      this.inline = true;
-      this.worker = null;
+      this.fallBack(`worker spawn failed: ${describeWorkerError(err)}`);
+      return null;
     }
-    return this.worker;
+    this.worker = worker;
+    worker.onmessage = (ev: MessageEvent) => {
+      const res = ev.data as AnalyzeResponse;
+      const p = this.pending.get(res.id);
+      if (p) {
+        this.pending.delete(res.id);
+        p.resolve(res);
+      }
+    };
+    worker.onerror = (err: unknown) => {
+      // Handled: we recover on the main thread, so keep it off the console.
+      (err as { preventDefault?: () => void } | null)?.preventDefault?.();
+      this.fallBack(`worker error: ${describeWorkerError(err)}`);
+    };
+    worker.onmessageerror = (err: unknown) => {
+      this.fallBack(`worker messageerror: ${describeWorkerError(err)}`);
+    };
+    return worker;
   }
 
   private cacheGet(key: string): AnalyzeResponse | undefined {
@@ -129,13 +192,19 @@ export class AnalysisClient {
 
     return new Promise<AnalyzeResponse>((resolve, reject) => {
       this.pending.set(id, {
+        req,
         resolve: (r) => {
           this.cacheSet(key, r);
           resolve(r);
         },
         reject,
       });
-      worker.postMessage(req);
+      try {
+        worker.postMessage(req);
+      } catch (err) {
+        // Could not hand the request to the worker → serve it (and the rest) inline.
+        this.fallBack(`worker postMessage failed: ${describeWorkerError(err)}`);
+      }
     });
   }
 

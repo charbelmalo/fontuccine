@@ -84,6 +84,18 @@ export interface Overlay {
    * the reserved min-width. Idempotent; call inside `ticker.read`.
    */
   measure(): void;
+  /**
+   * Make the real text visible again (drop `color: transparent`). For render
+   * layers that paint asynchronously (WebGL): keep the text readable until the
+   * layer has drawn its first frame, instead of showing nothing in between.
+   * Selection / a11y are unaffected either way. Idempotent.
+   */
+  showText(): void;
+  /**
+   * Visually hide the real text (`color: transparent`) once the render layer is
+   * painting. This is the state right after createOverlay(). Idempotent.
+   */
+  hideText(): void;
   /** Restore the host to its original DOM + inline styles. Leaks nothing. */
   destroy(): void;
 }
@@ -116,8 +128,11 @@ export function createOverlay(options: OverlayOptions): Overlay {
   save(host);
   const hostPosition =
     doc.defaultView?.getComputedStyle(host).position ?? host.style.position ?? 'static';
+  // `layout` containment + isolation give the host its own stacking/formatting
+  // context WITHOUT clipping: `paint` containment clipped the stretched run at
+  // the host box whenever the host was shrink-wrapped (inline-block, flex item).
   setStyles(host, {
-    contain: 'layout paint',
+    contain: 'layout',
     isolation: 'isolate',
   });
   if (hostPosition === 'static') host.style.setProperty('position', 'relative');
@@ -166,6 +181,14 @@ export function createOverlay(options: OverlayOptions): Overlay {
     }
   }
 
+  function showText(): void {
+    textLayer.style.removeProperty('color');
+  }
+
+  function hideText(): void {
+    textLayer.style.setProperty('color', 'transparent');
+  }
+
   function destroy(): void {
     // Move the real text nodes back to the host, drop our layers.
     if (textLayer.parentNode === host) {
@@ -191,6 +214,8 @@ export function createOverlay(options: OverlayOptions): Overlay {
       return naturalWidth;
     },
     measure,
+    showText,
+    hideText,
     destroy,
   };
 }

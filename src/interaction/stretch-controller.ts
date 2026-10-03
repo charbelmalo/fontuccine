@@ -72,6 +72,12 @@ export interface StretchControllerConfig {
 export interface StretchController {
   /** Current smoothed stretch scalar. Read in the RENDER phase. */
   readonly value: number;
+  /**
+   * Current smoothed velocity in stretch-units per second, 0 when at rest
+   * (settled). Drives velocity-scaled effects (e.g. `aberration.fromVelocity`).
+   * The `easingCurve` smoother reports no velocity (always 0).
+   */
+  readonly velocity: number;
   /** Current (clamped) target the smoother is chasing. */
   readonly target: number;
   readonly axis: StretchAxis;
@@ -86,9 +92,19 @@ export interface StretchController {
 
 const MAX_DT = 0.064;
 
+/** Axes already warned about (each unimplemented axis warns once per module). */
+const warnedAxes = new Set<string>();
+
 export function createStretchController(config: StretchControllerConfig = {}): StretchController {
   const ticker = config.ticker ?? sharedTicker;
   const axis: StretchAxis = config.axis ?? 'horizontal';
+  if ((axis === 'vertical' || axis === 'dual') && !warnedAxes.has(axis)) {
+    warnedAxes.add(axis);
+    console.warn(
+      '[fontuccine] axis "%s" is not implemented in 0.1.x — only horizontal stretching is rendered; the value is accepted for forward compatibility.',
+      axis,
+    );
+  }
   const trigger: Trigger = config.trigger ?? 'custom';
   const resting = config.restingValue ?? 1;
   const min = config.minStretchRatio ?? 1;
@@ -197,6 +213,12 @@ export function createStretchController(config: StretchControllerConfig = {}): S
   return {
     get value() {
       return smoother.value;
+    },
+    get velocity() {
+      // The spring's velocity is already per second (dt is in seconds). It only
+      // decays asymptotically, so report an exact 0 once settled: the renderer's
+      // settle-skip treats any non-zero velocity as "still moving".
+      return smoother.settled ? 0 : smoother.velocity;
     },
     get target() {
       return smoother.target;

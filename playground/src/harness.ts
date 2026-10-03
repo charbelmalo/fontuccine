@@ -6,11 +6,12 @@
  * `window.__H` so the Node driver (harness/run.mjs) can make IN-RUNTIME assertions
  * (tier selection, DOM/vector geometry, VF percentage semantics, VF↔SVG parity).
  *
- * WebGL pixel-level checks (scissor↔proxy alignment, MSDF sharpness) are NOT read
- * back here: the shared context has no preserveDrawingBuffer, so an in-page pixel
- * read isn't reliable. Those are captured as full-page screenshots for the driver
- * to save as BY-INSPECTION artifacts. The full-viewport shared canvas overlays the
- * host 1:1, so the screenshot shows exactly what shipped.
+ * WebGL pixel-level checks (MSDF edge integrity under stretch) are done by the
+ * driver from screenshots: it crops the host box from a WebGL run and from the
+ * matching SVG run and compares the two ink masks (IoU + torn-sliver count), so
+ * a WebGL tier that shreds glyph junctions fails CI instead of merely landing in
+ * harness/screenshots/. `webglCanvas()` reports the per-host surface canvas the
+ * WebGL tier blits into (it lives inside the host's render layer).
  */
 import { Fontuccine } from 'fontuccine';
 import type { FontuccineConfig } from 'fontuccine';
@@ -29,7 +30,9 @@ export interface HarnessAPI {
   vf(): { fontStretch: string; fvs: string } | null;
   /** Count of drawn glyph vectors (SVG) — proves per-glyph split rendering. */
   glyphPaths(): number;
-  webglCanvas(): { present: boolean; w: number; h: number } | null;
+  webglCanvas(): { present: boolean; w: number; h: number; inHost: boolean } | null;
+  /** Host box in page CSS px (for screenshot clips). */
+  hostRect(): { x: number; y: number; w: number; h: number };
 }
 
 declare global {
@@ -112,8 +115,12 @@ export async function mountHarness(params: URLSearchParams, fontTtf: string): Pr
       return svg ? svg.querySelectorAll('path').length : 0;
     },
     webglCanvas() {
-      const c = document.querySelector('canvas[data-fontuccine="webgl-shared"]') as HTMLCanvasElement | null;
-      return c ? { present: true, w: c.width, h: c.height } : { present: false, w: 0, h: 0 };
+      const c = host.querySelector('canvas[data-fontuccine="webgl-surface"]') as HTMLCanvasElement | null;
+      return c ? { present: true, w: c.width, h: c.height, inHost: host.contains(c) } : { present: false, w: 0, h: 0, inHost: false };
+    },
+    hostRect() {
+      const r = host.getBoundingClientRect();
+      return { x: r.left, y: r.top, w: r.width, h: r.height };
     },
   };
   window.__H = api;
@@ -128,8 +135,10 @@ export async function mountHarness(params: URLSearchParams, fontTtf: string): Pr
   api.notes = [...inst.notes];
   inst.set(ratio);
 
-  // Let the spring settle + paint a couple of frames before we flag ready.
-  await new Promise((r) => setTimeout(r, 180));
+  // Let the spring settle (stiffness 400 / damping 40 rests in < 600 ms) and
+  // paint before we flag ready: the pixel gate compares two tiers captured on
+  // different pages, so both must be at rest at the SAME stretch.
+  await new Promise((r) => setTimeout(r, 700));
   api.ready = true;
   document.title = `harness:${api.resolvedTier}`;
 }

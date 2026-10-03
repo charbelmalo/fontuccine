@@ -27,9 +27,13 @@ import { createSvgRenderer } from '../svg/renderer.ts';
 import { createWebglRenderer } from '../webgl/renderer.ts';
 import { createVfRenderer } from '../vf/renderer.ts';
 import { AnalysisClient } from '../worker/client.ts';
+import { MsdfClient } from '../webgl/msdf/client.ts';
 import { DEFAULT_PARAMS } from '../core/types.ts';
 import { loadEngineFont } from './font-load.ts';
+import { resolveVariationRequest } from './variations.ts';
+import { measureInkDilation } from './ink-calibration.ts';
 import { buildGlyphs } from './glyphs.ts';
+import type { RenderGlyph } from './glyphs.ts';
 import { selectTier } from './tier-select.ts';
 import type { ResolvedTier } from './tier-select.ts';
 import type { FontuccineConfig, Instance } from './types.ts';
@@ -37,6 +41,12 @@ import type { FontuccineConfig, Instance } from './types.ts';
 interface TierRenderer {
   attach(): void;
   destroy(): void;
+  /** WebGL renderer only: false ⇒ no usable GL backend, nothing will paint. */
+  readonly supported?: boolean;
+}
+
+function errMessage(err: unknown): string {
+  return (err as Error)?.message ?? String(err);
 }
 
 function resolveElement(target: string | Element, doc: Document | undefined): HTMLElement {
@@ -47,6 +57,52 @@ function resolveElement(target: string | Element, doc: Document | undefined): HT
     return el as HTMLElement;
   }
   return target as HTMLElement;
+}
+
+/** Computed font-* of the element → axis request (undefined without a view). */
+function resolveElementVariations(el: HTMLElement, doc: Document | undefined): Record<string, number> | undefined {
+  const view = doc?.defaultView ?? (typeof window !== 'undefined' ? window : undefined);
+  if (!view?.getComputedStyle) return undefined;
+  try {
+    const cs = view.getComputedStyle(el) as CSSStyleDeclaration & { fontOpticalSizing?: string };
+    return resolveVariationRequest({
+      fontWeight: cs.fontWeight,
+      fontStretch: cs.fontStretch,
+      fontStyle: cs.fontStyle,
+      fontSize: cs.fontSize,
+      fontOpticalSizing: cs.fontOpticalSizing,
+      fontVariationSettings: cs.fontVariationSettings,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Computed font/colour/smoothing of the element for the ink probe (undefined without a view). */
+function readInkStyle(el: HTMLElement, doc: Document | undefined): {
+  fontFamily: string; fontWeight: string; fontStretch: string; fontStyle: string; fontSizePx: number;
+  fontVariationSettings: string; fontOpticalSizing: string; fontSmoothing: string; color: string;
+} | undefined {
+  const view = doc?.defaultView ?? (typeof window !== 'undefined' ? window : undefined);
+  if (!view?.getComputedStyle) return undefined;
+  try {
+    const cs = view.getComputedStyle(el) as CSSStyleDeclaration & { fontOpticalSizing?: string; webkitFontSmoothing?: string };
+    const fontSizePx = parseFloat(cs.fontSize);
+    if (!Number.isFinite(fontSizePx) || fontSizePx <= 0) return undefined;
+    return {
+      fontFamily: cs.fontFamily,
+      fontWeight: cs.fontWeight,
+      fontStretch: cs.fontStretch,
+      fontStyle: cs.fontStyle,
+      fontSizePx,
+      fontVariationSettings: cs.fontVariationSettings ?? 'normal',
+      fontOpticalSizing: cs.fontOpticalSizing ?? 'auto',
+      fontSmoothing: cs.webkitFontSmoothing ?? '',
+      color: cs.color,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function defaultIsPrint(doc: Document | undefined): boolean {
@@ -102,6 +158,7 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
   let destroyed = false;
   let selectedTier: ResolvedTier | null = null;
   let renderer: TierRenderer | null = null;
+  let msdfClient: MsdfClient | null = null;
   const notes: string[] = [];
   let resolveReady!: () => void;
   const ready = new Promise<void>((r) => {
@@ -115,6 +172,13 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
       const webgl2 = (config.detectWebGL2Support ?? (() => detectWebGL2().supported))();
       const compression = min < 1;
 
+      // Which design instance to render: the element's computed font-* values
+      // (what the browser itself draws for it) unless the config says otherwise.
+      const variations =
+        config.fontVariations === false
+          ? undefined
+          : (config.fontVariations ?? resolveElementVariations(el, doc));
+
       // Load outlines + wdth axis (VF may still win; axis needed to probe it).
       const font = await loadEngineFont({
         ...(config.font ? { font: config.font } : {}),
@@ -122,9 +186,14 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
         ...(config.fontBuffer ? { fontBuffer: config.fontBuffer } : {}),
         ...(config.parsedFont ? { parsedFont: config.parsedFont } : {}),
         ...(config.wdthAxis !== undefined ? { wdthAxis: config.wdthAxis } : {}),
+        ...(variations ? { variations } : {}),
         unitsPerEm,
       });
       if (destroyed) return;
+      const vstat = font.parsed.variation;
+      if (vstat && !vstat.applied && vstat.reason && vstat.reason !== 'default-location' && vstat.reason !== 'not-variable') {
+        notes.push(`variable-font instancing unavailable (${vstat.reason}); rendering the font's default instance`);
+      }
 
       const vfDecision = probeTier0(font.wdthAxis, {
         maxStretchRatio: max,
@@ -144,65 +213,147 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
       notes.push(...decision.notes);
       if (destroyed) return;
 
-      if (selectedTier === 'vf') {
-        if (!font.wdthAxis) throw new Error('fontuccine: VF selected without a wdth axis');
-        renderer = createVfRenderer({
-          host: el,
-          axis: font.wdthAxis,
-          controller,
-          wrap: config.wrap ?? 'nowrap',
-          reserveBasis: config.reserveBasis ?? 'tier-capability',
-          maxStretchRatio: max,
-          restingStretch: resting,
-          respectReducedMotion: respectRM,
-          isReducedMotion: isRM,
-          ticker,
-          document: doc,
-        });
-      } else {
-        const params = {
-          ...DEFAULT_PARAMS,
-          slices: config.lutResolution ?? DEFAULT_PARAMS.slices,
-          k: config.edgeProtection ?? DEFAULT_PARAMS.k,
-        };
-        const glyphs = await buildGlyphs(font, config.text ?? el.textContent ?? '', client, params, unitsPerEm);
-        if (destroyed) return;
+      const params = {
+        ...DEFAULT_PARAMS,
+        slices: config.lutResolution ?? DEFAULT_PARAMS.slices,
+        k: config.edgeProtection ?? DEFAULT_PARAMS.k,
+        maxShareFactor: config.maxShareFactor ?? DEFAULT_PARAMS.maxShareFactor,
+      };
+      // Glyph analysis is built lazily + once: the VF tier never needs it, but a
+      // failed VF/WebGL attach falls back to SVG, which does.
+      let glyphs: RenderGlyph[] | null = null;
+      const getGlyphs = async (): Promise<RenderGlyph[]> => {
+        if (!glyphs) {
+          glyphs = await buildGlyphs(font, config.text ?? el.textContent ?? '', client, params, unitsPerEm);
+          if (client.mode === 'inline' && client.reason) {
+            notes.push(`analysis worker unavailable (${client.reason}); running on main thread`);
+          }
+        }
+        return glyphs;
+      };
+      // Ink calibration: how much bolder the host's text rasteriser draws these
+      // glyphs than their outline (device px per edge). null ⇒ exact outline.
+      const resolveInk = async (g: RenderGlyph[]): Promise<number | null> => {
+        const want = config.inkDilation ?? 'auto';
+        const dpr = (doc?.defaultView?.devicePixelRatio ?? 1) || 1;
+        if (typeof want === 'number') return Number.isFinite(want) ? want * dpr : null;
+        const style = readInkStyle(el, doc);
+        if (!style || !doc) return null;
+        const probe = g.filter((x) => x.commands.length > 0 && !/\s/.test(x.char)).slice(0, 4);
+        if (probe.length === 0) return null;
+        try {
+          const cal = await measureInkDilation({
+            doc,
+            ...style,
+            dpr,
+            unitsPerEm,
+            glyphs: probe.map((x) => ({ char: x.char, glyph: { commands: x.commands, advanceWidth: x.advanceWidth } })),
+          });
+          if (!cal) {
+            notes.push('ink calibration skipped (instance not expressible for a canvas probe); rendering the exact outline');
+            return null;
+          }
+          return cal.dilationDevicePx;
+        } catch (err) {
+          notes.push(`ink calibration failed (${errMessage(err)}); rendering the exact outline`);
+          return null;
+        }
+      };
+      const commonFor = (g: RenderGlyph[]) => ({
+        host: el,
+        glyphs: g,
+        controller,
+        ...(config.text != null ? { text: config.text } : {}),
+        wrap: config.wrap ?? 'nowrap',
+        maxStretchRatio: max,
+        restingStretch: resting,
+        unitsPerEm,
+        respectReducedMotion: respectRM,
+        isReducedMotion: isRM,
+        ticker,
+        document: doc,
+      });
 
-        const common = {
-          host: el,
-          glyphs,
-          controller,
-          ...(config.text != null ? { text: config.text } : {}),
-          wrap: config.wrap ?? 'nowrap',
-          maxStretchRatio: max,
-          restingStretch: resting,
-          unitsPerEm,
-          respectReducedMotion: respectRM,
-          isReducedMotion: isRM,
-          ticker,
-          document: doc,
-        };
-
-        if (selectedTier === 'webgl') {
-          renderer = createWebglRenderer({
-            ...common,
-            ...(config.effects ? { effects: config.effects } : {}),
-            ...(config.color ? { color: config.color } : {}),
-            ...(config.backend ? { backend: config.backend } : {}),
+      // Create + attach the selected tier. If it throws (or WebGL reports no
+      // usable backend) fall back to SVG so `tier` names what ACTUALLY renders.
+      try {
+        if (selectedTier === 'vf') {
+          if (!font.wdthAxis) throw new Error('fontuccine: VF selected without a wdth axis');
+          renderer = createVfRenderer({
+            host: el,
+            axis: font.wdthAxis,
+            controller,
+            wrap: config.wrap ?? 'nowrap',
+            reserveBasis: config.reserveBasis ?? 'tier-capability',
+            maxStretchRatio: max,
+            restingStretch: resting,
+            respectReducedMotion: respectRM,
+            isReducedMotion: isRM,
+            ticker,
+            document: doc,
           });
         } else {
-          renderer = createSvgRenderer(common);
+          const g = await getGlyphs();
+          if (destroyed) return;
+          const inkDevice = await resolveInk(g);
+          if (destroyed) return;
+          const dprNow = (doc?.defaultView?.devicePixelRatio ?? 1) || 1;
+          const inkCss = inkDevice == null ? 0 : inkDevice / dprNow;
+          if (selectedTier === 'webgl') {
+            msdfClient = new MsdfClient({
+              onFallback: (reason) =>
+                notes.push(`MSDF worker unavailable (${reason}); rasterizing on main thread`),
+            });
+            if (msdfClient.mode === 'inline' && msdfClient.reason) {
+              notes.push(`MSDF worker unavailable (${msdfClient.reason}); rasterizing on main thread`);
+            }
+            const webgl = createWebglRenderer({
+              ...commonFor(g),
+              msdfClient,
+              ...(inkDevice != null ? { inkDilation: inkDevice } : {}),
+              ...(config.effects ? { effects: config.effects } : {}),
+              ...(config.color ? { color: config.color } : {}),
+              ...(config.backend ? { backend: config.backend } : {}),
+              // The MSDF atlas rasterizes async, so the GL surface stays blank
+              // for a few frames: keep the real text readable until the first
+              // frame lands, then hide it (no invisible-text gap on rebuild).
+              onFirstDraw: () => webgl.overlay.hideText(),
+            });
+            webgl.overlay.showText();
+            renderer = webgl;
+          } else {
+            renderer = createSvgRenderer({ ...commonFor(g), ...(inkCss > 0 ? { inkDilation: inkCss } : {}) });
+          }
         }
-      }
 
-      if (destroyed) {
-        renderer?.destroy();
+        if (destroyed) {
+          renderer?.destroy();
+          renderer = null;
+          return;
+        }
+        if (renderer.supported === false) {
+          throw new Error('no usable WebGL2 backend');
+        }
+        renderer.attach();
+      } catch (err) {
+        if (selectedTier === 'svg') throw err; // nothing further to fall back to
+        notes.push(`${selectedTier} renderer failed (${errMessage(err)}) → falling back to SVG`);
+        try {
+          renderer?.destroy();
+        } catch {
+          /* best-effort teardown of the failed tier */
+        }
         renderer = null;
-        return;
+        msdfClient?.destroy();
+        msdfClient = null;
+        const g = await getGlyphs();
+        if (destroyed) return;
+        selectedTier = 'svg';
+        renderer = createSvgRenderer(commonFor(g));
+        renderer.attach();
       }
-      renderer.attach();
     } catch (err) {
-      notes.push(`build failed: ${(err as Error)?.message ?? String(err)}`);
+      notes.push(`build failed: ${errMessage(err)}`);
     } finally {
       resolveReady();
     }
@@ -220,6 +371,8 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
       renderer?.destroy();
       renderer = null;
       controller.destroy();
+      msdfClient?.destroy();
+      msdfClient = null;
       if (ownsClient) client.destroy();
     },
     get tier() {

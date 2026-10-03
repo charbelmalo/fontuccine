@@ -30,7 +30,12 @@ export { pointInGlyph } from './sampling/point-in-glyph.ts';
 export { windingNumber, pointInside, filterVisibleSamples, WindingIndex } from './winding.ts';
 export { KDTree } from './spatial/kdtree.ts';
 
-export { computeFlexProfile, buildFlexField } from './flex-profile.ts';
+export {
+  computeFlexProfile,
+  buildFlexField,
+  capFlexShares,
+  DEFAULT_MAX_SHARE_FACTOR,
+} from './flex-profile.ts';
 export type { FlexProfileOptions, FlexField, FieldOptions } from './flex-profile.ts';
 
 export { buildRemap, assertLUT } from './lut.ts';

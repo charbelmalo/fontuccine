@@ -14,7 +14,7 @@
  *  - Static per glyph: outline splitting (`splitGlyph`) runs once at build.
  *  - Reduced motion / print: draw ONCE at the resting stretch and register NO
  *    per-frame callback (no animation, zero ongoing engine work).
- *  - `contain: layout paint` + `isolation: isolate` on the host (via the shared
+ *  - `contain: layout` + `isolation: isolate` on the host (via the shared
  *    overlay) keep per-frame paints scoped.
  *
  * Scale without a per-frame read: the <svg> carries a fixed font-unit `viewBox`
@@ -79,6 +79,10 @@ export interface SvgRendererOptions {
   precision?: number;
   /** Glyphs above this warn (headline budget). Default 64. */
   glyphBudget?: number;
+  /** Extra ink per edge in CSS px so the fill matches the host's native text
+   *  rasteriser (engine/ink-calibration.ts): drawn as a same-colour, round-joined
+   *  stroke of twice this width. ≤ 0 ⇒ plain fill. */
+  inkDilation?: number;
   ticker?: Ticker;
   document?: Document;
   respectReducedMotion?: boolean;
@@ -129,10 +133,20 @@ export function createSvgRenderer(options: SvgRendererOptions): SvgRenderer {
   svg.setAttribute('data-fontuccine', 'svg-tier');
   svg.setAttribute('fill', 'currentColor');
   svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  const inkDilation = options.inkDilation ?? 0;
+  if (inkDilation > 0) {
+    // Same-colour stroke centred on the edge = morphological dilation by half
+    // its width; non-scaling so the width is CSS px regardless of the viewBox.
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', String(2 * inkDilation));
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('stroke-linecap', 'round');
+  }
 
   const prepared: PreparedGlyph[] = glyphs.map((g) => {
     const path = doc.createElementNS(SVG_NS, 'path') as SVGPathElement;
     if (g.char) path.setAttribute('data-char', g.char);
+    if (inkDilation > 0) path.setAttribute('vector-effect', 'non-scaling-stroke');
     svg.appendChild(path);
     return {
       path,

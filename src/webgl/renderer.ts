@@ -46,9 +46,9 @@ import type { MSDFBitmap } from './msdf/generator.ts';
 import type { RenderBackend, RunHandle, GlyphRunData } from './gl/device.ts';
 import { acquireSharedBackend, releaseSharedBackend, DEFAULT_GRID_SLICES } from './gl/shared.ts';
 
-const DEFAULT_ATLAS_SIZE = 1024;
-const DEFAULT_CELL = 64;
-const FLOATS_PER_INSTANCE = 9;
+const DEFAULT_ATLAS_SIZE = 2048;
+const DEFAULT_CELL = 96;
+const FLOATS_PER_INSTANCE = 13;
 
 export interface StretchSource {
   readonly value: number;
@@ -65,12 +65,12 @@ export interface WebglRendererOptions {
   maxStretchRatio?: number;
   restingStretch?: number;
   unitsPerEm?: number;
-  /** Ink color (straight alpha, 0..1). Default opaque black. */
+  /** Ink color (straight alpha, 0..1). Default: the host's computed CSS `color`. */
   color?: RGBAColor;
   effects?: EffectsConfig;
-  /** MSDF raster size in px per em. Default 48. */
+  /** MSDF raster size in px per em. Default 64. */
   fontSizeRaster?: number;
-  /** MSDF distance range in texels. Default 4. */
+  /** MSDF distance range in texels. Default 8. */
   pxRange?: number;
   ticker?: Ticker;
   document?: Document;
@@ -78,12 +78,17 @@ export interface WebglRendererOptions {
   isReducedMotion?: () => boolean;
   /** Device pixel ratio source (default: window.devicePixelRatio or 1). */
   dpr?: number;
+  /** Extra ink per edge in DEVICE px so the MSDF fill matches the host's native
+   *  text rasteriser (see engine/ink-calibration.ts). Default 0 = exact outline. */
+  inkDilation?: number;
   /** Injected backend (tests). Omit to use the shared page-global backend. */
   backend?: RenderBackend;
   /** Injected MSDF client (tests / shared). Omit to create one. */
   msdfClient?: MsdfClient;
   /** Visibility gate factory (tests). */
   visibilityFactory?: VisibilityOptions['factory'];
+  /** Called once, right after the first frame is blitted into the host's surface. */
+  onFirstDraw?: () => void;
 }
 
 export interface WebglRenderer {
@@ -93,8 +98,10 @@ export interface WebglRenderer {
   destroy(): void;
   /** True when WebGL2 is available; false ⇒ engine must drop to the SVG tier. */
   readonly supported: boolean;
-  /** The shared render surface (canvas), or null when unsupported. */
+  /** The shared (offscreen) GL surface, or null when unsupported. */
   readonly element: HTMLCanvasElement | null;
+  /** This host's visible canvas (inside the host's render layer), or null. */
+  readonly surface: HTMLCanvasElement | null;
   readonly overlay: Overlay;
 }
 
@@ -119,8 +126,8 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     maxStretchRatio = 4.5,
     restingStretch = 1,
     unitsPerEm = 1000,
-    fontSizeRaster = 48,
-    pxRange = 4,
+    fontSizeRaster = 64,
+    pxRange = 8,
   } = options;
 
   const ticker = options.ticker ?? sharedTicker;
@@ -128,7 +135,8 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
   if (!doc) throw new Error('createWebglRenderer: no document available');
   const respectRM = options.respectReducedMotion ?? true;
   const isRM = options.isReducedMotion ?? prefersReducedMotion;
-  const color: RGBAColor = options.color ?? { r: 0, g: 0, b: 0, a: 1 };
+  let color: RGBAColor = options.color ?? { r: 0, g: 0, b: 0, a: 1 };
+  const colorFromCss = !options.color; // follow the host's computed CSS color
   const effects = options.effects ?? {};
   const slices = glyphs[0]?.flex.length ?? DEFAULT_GRID_SLICES;
 
@@ -142,11 +150,32 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
 
   // Shared MSDF atlas (slot LRU). One per renderer instance's glyph set; the
   // backend's atlas texture is shared, cells are packed here.
-  const atlas = new MsdfAtlas({ size: DEFAULT_ATLAS_SIZE, cellSize: DEFAULT_CELL, dpr: options.dpr ?? 1 });
+  const rasterPad = Math.ceil(pxRange / 2) + 2; // generator default padding
+  const cellSize = Math.max(DEFAULT_CELL, Math.ceil(fontSizeRaster * 1.25) + 2 * rasterPad);
+  const atlas = new MsdfAtlas({ size: DEFAULT_ATLAS_SIZE, cellSize, dpr: options.dpr ?? 1 });
 
   // --- proxy render layer (inert) so the frozen overlay machinery applies.
   const proxy = doc.createElement('div');
   proxy.setAttribute('data-fontuccine', 'webgl');
+  // Visible per-host surface: the shared GL canvas is offscreen; each frame the
+  // run is drawn there (scissored at the origin) and blitted into this canvas,
+  // which lives inside the host's render layer → correct stacking (modals stay
+  // on top) and no page-global fixed layer.
+  const surface = doc.createElement('canvas');
+  surface.setAttribute('data-fontuccine', 'webgl-surface');
+  surface.setAttribute('aria-hidden', 'true');
+  Object.assign(surface.style, {
+    position: 'absolute',
+    left: '0',
+    top: '0',
+    display: 'block',
+    pointerEvents: 'none',
+  } as CSSStyleDeclaration);
+  proxy.appendChild(surface);
+  let surfaceCtx: CanvasRenderingContext2D | null = null;
+  let surfW = 0;
+  let surfH = 0;
+  let onFirstDraw = options.onFirstDraw;
   const overlay = createOverlay({
     host,
     renderLayer: proxy,
@@ -260,14 +289,25 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
         const { x, y } = atlas.cellOrigin(cell.slot);
         backend.uploadAtlasCell(x, y, bmp);
       }
-      // atlas UV rect for this glyph's INK region (box [0,1]² → ink texels).
+      // EXACT atlas UV rect for this glyph's INK box (box [0,1]² ↔ the float
+      // texel extents of [bounds.min,bounds.max]×[bbox.minY,bbox.maxY]; no
+      // ceil'd sizes, so registration is exact to the texel), plus the padding
+      // extents so the quad also covers the anti-aliasing ramp (a_quadX/Y).
       const { x: cx, y: cy } = atlas.cellOrigin(cell.slot);
       const S = DEFAULT_ATLAS_SIZE;
       const pad = bmp.padding;
-      const uvOx = (cx + pad) / S;
-      const uvOy = (cy + bmp.height - pad) / S; // box y=0 (bottom) → image bottom
-      const uvSx = (bmp.width - 2 * pad) / S;
-      const uvSy = -(bmp.height - 2 * pad) / S; // signed: box y=1 (top) → image top
+      const originX = bmp.originX ?? bmp.bbox.minX - pad / bmp.scale;
+      const originY = bmp.originY ?? bmp.bbox.maxY + pad / bmp.scale;
+      const tx0 = (s.bounds.min - originX) * bmp.scale; // ink left, texels from cell left
+      const tx1 = (s.bounds.max - originX) * bmp.scale;
+      const inkW = Math.max(1e-6, tx1 - tx0);
+      const tyTop = (originY - bmp.bbox.minY) * bmp.scale; // visual top, rows from cell top
+      const tyBot = (originY - bmp.bbox.maxY) * bmp.scale; // visual bottom (= pad)
+      const inkH = Math.max(1e-6, tyTop - tyBot);
+      const uvOx = (cx + tx0) / S;
+      const uvOy = (cy + tyTop) / S; // box y=0 (visual top)
+      const uvSx = inkW / S;
+      const uvSy = -inkH / S; // box y=1 (visual bottom)
       s.uv = { origin: [uvOx, uvOy], size: [uvSx, uvSy] };
 
       const o = i * FLOATS_PER_INSTANCE;
@@ -280,6 +320,10 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
       instances[o + 6] = uvSx;
       instances[o + 7] = uvSy;
       instances[o + 8] = i; // lut row
+      instances[o + 9] = tx0 / inkW; // padLeft (ink-width units)
+      instances[o + 10] = (bmp.width - tx1) / inkW; // padRight
+      instances[o + 11] = (bmp.height - tyTop) / inkH; // padTop (ink-height units)
+      instances[o + 12] = tyBot / inkH; // padBottom
     }
 
     const data: GlyphRunData = {
@@ -310,10 +354,65 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     return Promise.all(jobs).then(() => void 0);
   }
 
+  /** Parse a computed CSS color (`rgb()` / `rgba()`) into straight-alpha 0..1. */
+  function parseCssColor(css: string): RGBAColor | null {
+    const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?\s*\)$/i.exec(css.trim());
+    if (!m) return null;
+    const a = m[4] === undefined ? 1 : m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+    return { r: +m[1] / 255, g: +m[2] / 255, b: +m[3] / 255, a: Number.isFinite(a) ? a : 1 };
+  }
+
+  /** WebGL ink follows the host's computed `color` (like the SVG tier's currentColor). */
+  function readColor(): void {
+    if (!colorFromCss) return;
+    const view = doc.defaultView;
+    if (!view) return;
+    const c = parseCssColor(view.getComputedStyle(host).color);
+    if (c && (c.r !== color.r || c.g !== color.g || c.b !== color.b || c.a !== color.a)) {
+      color = c;
+      lastStretch = Number.NaN; // force a repaint
+    }
+  }
+
+  /** CSS px the run needs at `stretch` (ink + AA padding), never below the host box. */
+  function runExtent(stretch: number): { w: number; h: number } {
+    const emPx = fontSizePx / unitsPerEm;
+    let right = hostRect?.w ?? 0;
+    let bottom = hostRect?.h ?? 0;
+    for (const s of statics) {
+      const bmp = s.bitmap;
+      const padPx = bmp ? (bmp.padding / bmp.scale) * emPx : 0;
+      const r = stretch * (s.originFactor + s.width) * emPx + 2 * padPx;
+      const b = (s.yTop + s.height) * emPx + 2 * padPx;
+      if (r > right) right = r;
+      if (b > bottom) bottom = b;
+    }
+    return { w: Math.ceil(right), h: Math.ceil(bottom) };
+  }
+
+  /** Grow the per-host surface (never shrink) so the stretched run is never clipped. */
+  function ensureSurface(stretch: number, d: number): void {
+    const need = runExtent(stretch);
+    if (need.w > surfW || need.h > surfH) {
+      surfW = Math.max(surfW, Math.ceil(need.w * 1.25));
+      surfH = Math.max(surfH, need.h);
+    }
+    const bw = Math.max(1, Math.round(surfW * d));
+    const bh = Math.max(1, Math.round(surfH * d));
+    if (surface.width !== bw || surface.height !== bh) {
+      surface.width = bw;
+      surface.height = bh;
+      surface.style.width = `${surfW}px`;
+      surface.style.height = `${surfH}px`;
+    }
+    if (!surfaceCtx) surfaceCtx = surface.getContext('2d');
+  }
+
   function readPhase(): void {
     if (!rectDirty) return;
     rectDirty = false;
     overlay.measure();
+    readColor();
     // Host screen rect in CSS px (single getBoundingClientRect).
     const r = host.getBoundingClientRect();
     hostRect = { x: r.left, y: r.top, w: r.width, h: r.height };
@@ -369,17 +468,21 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     const stretch = Math.max(1, rawStretch);
     lastStretch = stretch;
     const d = dpr();
-    backend.ensureSize(
-      hostRect ? Math.max(hostRect.x + hostRect.w, viewportW()) : viewportW(),
-      viewportH(),
-      d,
-    );
+    ensureSurface(stretch, d);
+    // The shared GL canvas is an offscreen scratch surface: draw this run at
+    // its origin (scissored to the surface size), then blit into the host's
+    // canvas. Grow-only so hosts sharing the canvas never thrash its size.
+    const glCanvas = backend.canvas;
+    const curW = glCanvas ? glCanvas.width / d : 0;
+    const curH = glCanvas ? glCanvas.height / d : 0;
+    backend.ensureSize(Math.max(surfW, curW), Math.max(surfH, curH), d);
     backend.beginFrame(now);
+    const region = { x: 0, y: 0, w: surfW, h: surfH };
 
     const velocity = controller.velocity ?? 0;
     const fx = frameEffects(velocity);
     run.draw({
-      region: hostRect,
+      region,
       dpr: d,
       stretch,
       origin: 0,
@@ -388,18 +491,26 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
       atlasSize: DEFAULT_ATLAS_SIZE,
       grain: fx.grain,
       aberration: fx.aberration,
+      inkDilate: options.inkDilation ?? 0,
       stretchDir: [1, 0], // horizontal axis only
       time: now * 0.001,
       dispIntensity: fx.disp,
       dispScale: fx.dispScale,
     });
-  }
 
-  function viewportW(): number {
-    return doc.defaultView?.innerWidth ?? (hostRect ? hostRect.x + hostRect.w : 1);
-  }
-  function viewportH(): number {
-    return doc.defaultView?.innerHeight ?? (hostRect ? hostRect.y + hostRect.h : 1);
+    // Blit the region into the host's own canvas (same task as the draw, so the
+    // GL drawing buffer is still intact regardless of preserveDrawingBuffer).
+    if (glCanvas && surfaceCtx) {
+      const bw = surface.width;
+      const bh = surface.height;
+      surfaceCtx.clearRect(0, 0, bw, bh);
+      try {
+        surfaceCtx.drawImage(glCanvas, 0, 0, bw, bh, 0, 0, bw, bh);
+        if (onFirstDraw) { const cb = onFirstDraw; onFirstDraw = undefined; cb(); }
+      } catch {
+        /* detached / zero-size GL canvas: nothing to show this frame */
+      }
+    }
   }
 
   function draw(now = 0): void {
@@ -475,6 +586,7 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
       ready = true;
       // First measure (host rect + font-size) then assemble with real px.
       overlay.measure();
+      readColor();
       const r = host.getBoundingClientRect();
       hostRect = { x: r.left, y: r.top, w: r.width, h: r.height };
       const view = doc.defaultView;
@@ -522,6 +634,8 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
       run.dispose();
       run = null;
     }
+    surface.remove();
+    surfaceCtx = null;
     overlay.destroy();
     if (ownsMsdf) msdf.destroy();
     if (usingShared && backend) releaseSharedBackend();
@@ -536,6 +650,9 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     supported,
     get element() {
       return backend?.canvas ?? null;
+    },
+    get surface() {
+      return supported ? surface : null;
     },
     overlay,
   };

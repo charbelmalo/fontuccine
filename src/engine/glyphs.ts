@@ -47,7 +47,11 @@ export async function buildGlyphs(
 
     if (!g) {
       if (isBlank(ch)) {
-        const advanceWidth = font.advanceOf ? font.advanceOf(ch) : unitsPerEm * 0.25;
+        const advanceWidth = font.parsed.advance
+          ? font.parsed.advance(ch)
+          : font.advanceOf
+            ? font.advanceOf(ch)
+            : unitsPerEm * 0.25;
         out.push({
           char: ch,
           commands: [],

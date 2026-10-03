@@ -165,3 +165,19 @@ test('destroy() unsubscribes: no further frames mutate value', () => {
   run(t, 200);
   assert.equal(c.value, settled, 'value frozen after destroy');
 });
+
+test('velocity: exposed per second while moving, exactly 0 at rest', () => {
+  const t = createTicker(inertScheduler());
+  const c = createStretchController({ trigger: 'custom', ticker: t, maxStretchRatio: 3 });
+  assert.equal(c.velocity, 0, 'at rest before any input');
+  c.set(2);
+  run(t, 4);
+  assert.notEqual(c.velocity, 0, 'moving toward the target');
+  assert.ok(c.velocity > 0, `velocity points toward the larger target (${c.velocity})`);
+  // Per second, not per frame: a 1→2 critically-damped spring (ω≈13/s) peaks
+  // near 4.8 stretch/s — a per-frame value would be ~60× smaller.
+  assert.ok(c.velocity > 1, `per-second magnitude (${c.velocity})`);
+  run(t, 600, 4 * 16.6667);
+  assert.equal(c.velocity, 0, 'exactly 0 once settled');
+  c.destroy();
+});

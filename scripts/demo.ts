@@ -1,9 +1,14 @@
 /**
- * scripts/demo.ts — before/after proof on a REAL font, via the PRODUCTION core.
+ * scripts/demo.ts — CORE-MATH ILLUSTRATION (not a capture of the shipped renderer).
  *
  * Parses a system font with the FontParser, runs buildFlexField +
  * computeFlexProfile + buildRemap from src/core, and writes side-by-side SVGs:
  *   original | naive scale | tangent-aligned stretch
+ * The SVGs are drawn directly from the remapped outlines, so they show what the
+ * math produces — NOT what the WebGL/SVG tiers paint in a browser. The vertical
+ * variant exercises the y-axis field of the core only: no renderer applies a
+ * vertical remap in 0.1.x. The README's demo image (demos/demo-horizontal.png)
+ * is a real headless-Chrome capture of the WebGL tier, not this script's output.
  *
  * Run: node scripts/demo.ts [/path/to/font.ttf]
  */

@@ -35,6 +35,7 @@ export function analyzeGlyph(req: AnalyzeRequest): AnalyzeResponse {
       crossBounds,
       interiorSamples: params.interiorSamples,
       smooth: params.smooth,
+      maxShareFactor: params.maxShareFactor,
       field,
     });
     profiles[axis] = { flex, bounds };

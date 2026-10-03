@@ -393,3 +393,41 @@ test('enabled effects flow through to draw params (grain + velocity aberration)'
   assert.ok(p.aberration > 0 && p.aberration <= 2, 'velocity aberration within max');
   r.destroy();
 });
+
+test('onFirstDraw fires exactly once, only after a frame is blitted into the host surface', async () => {
+  const { doc, host, window } = makeDoc();
+  // jsdom has no 2D canvas: stub one so the blit into the host surface runs.
+  let blits = 0;
+  (window.HTMLCanvasElement.prototype as unknown as { getContext: (t: string) => unknown }).getContext = (t: string) =>
+    t === '2d' ? { clearRect() {}, drawImage() { blits++; } } : null;
+  const backend = new MockBackend(doc);
+  const ticker = manualTicker();
+  const controller = { value: 1 };
+  let firstDraws = 0;
+  const r = createWebglRenderer({
+    host,
+    glyphs: [glyph()],
+    controller,
+    ticker,
+    backend,
+    msdfClient: freshClient(),
+    onFirstDraw: () => {
+      firstDraws++;
+      r.overlay.hideText();
+    },
+  });
+  r.overlay.showText(); // what the engine does for the async WebGL tier
+  r.attach();
+  assert.equal(firstDraws, 0, 'nothing painted before the atlas is ready');
+  assert.equal(r.overlay.textLayer.style.color, '', 'real text visible meanwhile');
+  await settle();
+  ticker.frame(1);
+  assert.equal(blits, 1, 'first frame blitted');
+  assert.equal(firstDraws, 1, 'callback after the first blit');
+  assert.equal(r.overlay.textLayer.style.color, 'transparent', 'text hidden once the layer painted');
+  controller.value = 1.5;
+  ticker.frame(2);
+  assert.equal(blits, 2);
+  assert.equal(firstDraws, 1, 'never again');
+  r.destroy();
+});

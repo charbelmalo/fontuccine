@@ -110,6 +110,12 @@ export interface AnalyzeParams {
   interiorSamples: number;
   smooth: number;
   samplesPerSegment: number;
+  /**
+   * Per-slice share cap for the flex profile (core/flex-profile.ts
+   * capFlexShares): a slice may take at most this multiple of its uniform share
+   * of the extra width. Optional; computeFlexProfile defaults it to 4.
+   */
+  maxShareFactor?: number;
 }
 
 export interface AnalyzeRequest {
@@ -143,4 +149,5 @@ export const DEFAULT_PARAMS: AnalyzeParams = {
   interiorSamples: 48,
   smooth: 0.75,
   samplesPerSegment: 24,
+  maxShareFactor: 4,
 };

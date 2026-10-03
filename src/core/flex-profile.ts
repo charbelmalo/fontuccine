@@ -83,7 +83,16 @@ export interface FlexProfileOptions {
   edgeClamp?: boolean;
   /** Reuse a prebuilt field (both axes of a glyph share one). */
   field?: FlexField;
+  /**
+   * Per-slice share cap, applied LAST (see capFlexShares): no slice may take
+   * more than `maxShareFactor`× its uniform share (1/N) of the extra width.
+   * Default 4. `Infinity` disables it and returns the raw profile.
+   */
+  maxShareFactor?: number;
 }
+
+/** Default per-slice share cap (see capFlexShares / DEFAULT_PARAMS). */
+export const DEFAULT_MAX_SHARE_FACTOR = 4;
 
 /**
  * Nonzero-winding crossings of the outline with the line {stretch-axis = a}.
@@ -136,6 +145,7 @@ export function computeFlexProfile(
     spatial = 'kdtree',
     filterInvisible = true,
     edgeClamp = true,
+    maxShareFactor = DEFAULT_MAX_SHARE_FACTOR,
   } = options;
 
   const { min, max } = bounds;
@@ -185,7 +195,78 @@ export function computeFlexProfile(
     flex[slices - 1] = flex[slices - 2];
   }
 
-  return smooth > 0 ? gaussianSmooth(flex, smooth) : flex;
+  const smoothed = smooth > 0 ? gaussianSmooth(flex, smooth) : flex;
+  return capFlexShares(smoothed, maxShareFactor);
+}
+
+/**
+ * Stretch-independent per-slice SHARE CAP with water-filling.
+ *
+ * Consumers (buildRemap, buildFlexCumulative) give slice i the share
+ * s_i = flex_i / Σflex of the extra width. On diagonal-only glyphs ("w", "v",
+ * "x", "A") nearly every slice is rigid and only the 1–3 apex slices, where the
+ * tangent turns horizontal, have flex ≈ 1 — so proportional distribution dumps
+ * the ENTIRE extra width into them (a single slice grows 30–50× at stretch 2.5
+ * and the glyph reads as "v + flat slab + v"). Capping the share bounds any
+ * slice's growth at  1 + (stretch − 1)·maxShareFactor  at every stretch.
+ *
+ * Algorithm: cap = maxShareFactor / N (a factor < 1 is treated as 1, since
+ * cap·N < 1 is infeasible). Every share above the cap is clamped to it and the
+ * removed excess is re-distributed over the uncapped slices proportionally to
+ * (s_i + floor), floor = 0.5/N. The floor dominates the tiny raw shares of
+ * rigid slices (|cos θ|^8 differs ~10× between a 70° and a 75° stroke), so the
+ * overflow spreads ~evenly over the rigid slices instead of letting those tiny
+ * differences decide how much each diagonal grows, while slices with meaningful
+ * flex still take proportionally more. Repeated until no slice exceeds the cap; each pass that
+ * does not converge caps ≥ 1 more slice, so ≤ N+1 passes.
+ *
+ * Output units: the capped shares are rescaled by the input's Σflex, i.e.
+ * out_i = s'_i · Σflex. Σ is preserved, values stay in [0, 1] (every value is
+ * ≤ cap·Σflex, which is below the flex of any slice that was capped, ≤ 1), and
+ * buildRemap / buildFlexCumulative — which normalise by Σ — see exactly s'_i.
+ * A profile that already respects the cap (or is fully rigid, Σ < 1e-9, which
+ * consumers degrade to uniform scaling) is returned as an unchanged copy.
+ * `maxShareFactor = Infinity` (or NaN / ≤ 0) disables the cap.
+ */
+export function capFlexShares(flex: Float32Array, maxShareFactor: number): Float32Array {
+  const N = flex.length;
+  const out = new Float32Array(flex);
+  if (N === 0 || !(maxShareFactor > 0) || !Number.isFinite(maxShareFactor)) return out;
+
+  let sum = 0;
+  for (let i = 0; i < N; i++) sum += flex[i];
+  if (!(sum >= 1e-9)) return out; // fully rigid → consumers use uniform scaling
+
+  const cap = Math.max(1, maxShareFactor) / N;
+  const s = new Float64Array(N);
+  let over = false;
+  for (let i = 0; i < N; i++) {
+    s[i] = flex[i] / sum;
+    if (s[i] > cap) over = true;
+  }
+  if (!over) return out;
+
+  const floor = 0.5 / N;
+  const capped = new Uint8Array(N);
+  for (let pass = 0; pass <= N; pass++) {
+    let excess = 0;
+    for (let i = 0; i < N; i++) {
+      if (!capped[i] && s[i] > cap) {
+        excess += s[i] - cap;
+        s[i] = cap;
+        capped[i] = 1;
+      }
+    }
+    if (excess < 1e-12) break;
+    let weight = 0;
+    for (let i = 0; i < N; i++) if (!capped[i]) weight += s[i] + floor;
+    if (weight <= 0) break; // every slice at cap ⇒ Σ s = cap·N ≥ 1 already
+    const k = excess / weight;
+    for (let i = 0; i < N; i++) if (!capped[i]) s[i] += k * (s[i] + floor);
+  }
+
+  for (let i = 0; i < N; i++) out[i] = s[i] * sum;
+  return out;
 }
 
 function gaussianSmooth(arr: Float32Array, sigma: number): Float32Array {

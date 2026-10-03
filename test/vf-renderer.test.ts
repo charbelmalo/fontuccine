@@ -164,6 +164,53 @@ test('wrap:reserve reserves max-stretch width from a READ-phase measurement', ()
   r.destroy();
 });
 
+test('wrap:reserve converges (no runaway) when the measured box reflects its own reserve + stretch', () => {
+  const { doc, host, window } = makeDoc('WIDE');
+  // Capture the ResizeObserver callback so the test can deliver the
+  // notifications a real browser would send after each size change.
+  const roCallbacks: Array<() => void> = [];
+  (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver = class {
+    constructor(cb: () => void) {
+      roCallbacks.push(cb);
+    }
+    observe() {}
+    disconnect() {}
+    unobserve() {}
+  };
+  const NATURAL = 200;
+  // A "real layout" fake: the box is max(text width at the current stretch, min-width).
+  const boxWidth = (): number => {
+    const pct = parseFloat(host.style.getPropertyValue('font-stretch')) || 100;
+    const min = parseFloat(host.style.getPropertyValue('min-width')) || 0;
+    return Math.max(NATURAL * (pct / 100), min);
+  };
+  host.getBoundingClientRect = () => {
+    const w = boxWidth();
+    return { width: w, height: 40, top: 0, left: 0, right: w, bottom: 40, x: 0, y: 0, toJSON() {} } as DOMRect;
+  };
+  const ticker = manualTicker();
+  const controller = { value: 1.2 }; // mid-stretch while re-measuring
+  const r = createVfRenderer({ host, axis, controller, ticker, document: doc, wrap: 'reserve', restingStretch: 1, isReducedMotion: () => false });
+  r.attach();
+  let lastObserved = boxWidth();
+  for (let i = 1; i <= 12; i++) {
+    ticker.frame(i);
+    // Deliver a resize notification whenever the box changed, plus the
+    // invalidations the renderer listens to (scroll, explicit resize()).
+    if (boxWidth() !== lastObserved) {
+      lastObserved = boxWidth();
+      for (const cb of roCallbacks) cb();
+    }
+    if (i % 3 === 0) window.dispatchEvent(new window.Event('scroll'));
+    if (i % 4 === 0) r.resize();
+  }
+  // natural 200 × (125/100) = 250 — NOT 250 × 1.25 × 1.25 × …
+  assert.equal(host.style.getPropertyValue('min-width'), '250px', 'reserve stays natural × factor');
+  assert.equal((r as unknown as { _reservedFrom: number })._reservedFrom, NATURAL, 'measured at rest, reserve cleared');
+  assert.equal(host.style.getPropertyValue('font-stretch'), '120%', 'live stretch restored after measuring');
+  r.destroy();
+});
+
 test('reserveBasis:tier-capability (default) reserves the axis-bounded box', () => {
   const NATURAL = 200;
   // default (option omitted)
