@@ -33,6 +33,9 @@ import { loadEngineFont } from './font-load.ts';
 import { resolveVariationRequest } from './variations.ts';
 import { measureInkDilation } from './ink-calibration.ts';
 import { buildGlyphs } from './glyphs.ts';
+import { buildWidthLadder, planFromRenderGlyphs } from './width-ladder.ts';
+import { defaultTracking } from '../core/width-plan.ts';
+import type { WidthPlan } from '../core/width-plan.ts';
 import type { RenderGlyph } from './glyphs.ts';
 import { selectTier } from './tier-select.ts';
 import type { ResolvedTier } from './tier-select.ts';
@@ -231,6 +234,34 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
         }
         return glyphs;
       };
+      // Width plan: the font's own wider (narrower) instances first, then
+      // straight-column + tracking residual (core/width-plan.ts). Built once.
+      let plan: WidthPlan | null = null;
+      const getPlan = async (g: RenderGlyph[]): Promise<WidthPlan> => {
+        if (plan) return plan;
+        let vf = null;
+        if (font.buffer) {
+          try {
+            const { openVariableFont } = await import('../font/parser.ts');
+            vf = openVariableFont(font.buffer, { fontSize: unitsPerEm });
+          } catch {
+            vf = null;
+          }
+        }
+        plan = vf
+          ? await buildWidthLadder({
+              font: vf,
+              ...(variations ? { base: variations } : {}),
+              glyphs: g,
+              client,
+              params,
+              unitsPerEm,
+              minStretch: Math.min(1, min),
+              maxStretch: Math.max(1, max),
+            })
+          : await planFromRenderGlyphs(g, client, params, defaultTracking(unitsPerEm));
+        return plan;
+      };
       // Ink calibration: how much bolder the host's text rasteriser draws these
       // glyphs than their outline (device px per edge). null ⇒ exact outline.
       const resolveInk = async (g: RenderGlyph[]): Promise<number | null> => {
@@ -259,9 +290,10 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
           return null;
         }
       };
-      const commonFor = (g: RenderGlyph[]) => ({
+      const commonFor = (g: RenderGlyph[], p: WidthPlan | null) => ({
         host: el,
         glyphs: g,
+        ...(p ? { plan: p } : {}),
         controller,
         ...(config.text != null ? { text: config.text } : {}),
         wrap: config.wrap ?? 'nowrap',
@@ -295,6 +327,8 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
         } else {
           const g = await getGlyphs();
           if (destroyed) return;
+          const p = await getPlan(g);
+          if (destroyed) return;
           const inkDevice = await resolveInk(g);
           if (destroyed) return;
           const dprNow = (doc?.defaultView?.devicePixelRatio ?? 1) || 1;
@@ -308,7 +342,7 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
               notes.push(`MSDF worker unavailable (${msdfClient.reason}); rasterizing on main thread`);
             }
             const webgl = createWebglRenderer({
-              ...commonFor(g),
+              ...commonFor(g, p),
               msdfClient,
               ...(inkDevice != null ? { inkDilation: inkDevice } : {}),
               ...(config.effects ? { effects: config.effects } : {}),
@@ -322,7 +356,7 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
             webgl.overlay.showText();
             renderer = webgl;
           } else {
-            renderer = createSvgRenderer({ ...commonFor(g), ...(inkCss > 0 ? { inkDilation: inkCss } : {}) });
+            renderer = createSvgRenderer({ ...commonFor(g, p), ...(inkCss > 0 ? { inkDilation: inkCss } : {}) });
           }
         }
 
@@ -348,8 +382,15 @@ export function attach(target: string | Element, config: FontuccineConfig = {}):
         msdfClient = null;
         const g = await getGlyphs();
         if (destroyed) return;
+        let p: WidthPlan | null = null;
+        try {
+          p = await getPlan(g);
+        } catch (planErr) {
+          notes.push(`width plan failed (${errMessage(planErr)}); using the legacy flex model`);
+        }
+        if (destroyed) return;
         selectedTier = 'svg';
-        renderer = createSvgRenderer(commonFor(g));
+        renderer = createSvgRenderer(commonFor(g, p));
         renderer.attach();
       }
     } catch (err) {

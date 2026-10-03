@@ -32,7 +32,7 @@ export interface Region {
 
 /** Static per-run GPU inputs — provided at build AND rebuilt on context restore. */
 export interface GlyphRunData {
-  /** Interleaved static per-glyph instance attributes (9 floats/glyph). */
+  /** Interleaved static per-glyph instance attributes (FLOATS_PER_INSTANCE floats/glyph). */
   instances: Float32Array;
   instanceCount: number;
   /** This run's cumulative-flex LUTs, packed row-per-glyph. */
@@ -45,7 +45,12 @@ export interface FrameParams {
   region: Region;
   /** Device pixel ratio (CSS px region → device-px scissor/viewport). */
   dpr: number;
+  /** Stretch ratio (diagnostics + legacy default for `growth`). */
   stretch: number;
+  /** Residual growth (shader `u_growth`). Default `stretch - 1` (legacy flex model). */
+  growth?: number;
+  /** Blend between the run's two design instances (shader `u_instMix`). Default 0. */
+  instMix?: number;
   origin: number;
   color: RGBAColor;
   pxRange: number;
@@ -101,7 +106,12 @@ export interface RenderBackend {
 
 // ── real WebGL2 backend (inspection-verified; no headless GL to run it) ───────
 
-const FLOATS_PER_INSTANCE = 13;
+/**
+ * Instance layout (floats): left0 left1 | width0 width1 | yTop0 h0 | yTop1 h1 |
+ * uv0 (origin.xy, size.xy) | uv1 (origin.xy, size.xy) | lutRow |
+ * slopeLeft slopeInk | padL padR padT padB.
+ */
+export const FLOATS_PER_INSTANCE = 23;
 
 interface GlProgramState {
   program: WebGLProgram;
@@ -159,14 +169,15 @@ class WebGL2Run implements RunHandle {
       gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, offsetFloats * 4);
       gl.vertexAttribDivisor(loc, 1);
     };
-    attr('a_glyphOrigin', 1, 0);
-    attr('a_glyphWidth', 1, 1);
-    attr('a_glyphY', 2, 2);
-    attr('a_atlasUVOrigin', 2, 4);
-    attr('a_atlasUVSize', 2, 6);
-    attr('a_lutRow', 1, 8);
-    attr('a_quadX', 2, 9);
-    attr('a_quadY', 2, 11);
+    attr('a_left', 2, 0);
+    attr('a_width', 2, 2);
+    attr('a_y0', 2, 4);
+    attr('a_y1', 2, 6);
+    attr('a_uv0', 4, 8);
+    attr('a_uv1', 4, 12);
+    attr('a_lutRow', 1, 16);
+    attr('a_slopes', 2, 17);
+    attr('a_quad', 4, 19);
 
     // per-run LUT texture (R32F, width=N+1, height=glyphCount), NEAREST
     if (!this.lutTex) this.lutTex = gl.createTexture();
@@ -215,7 +226,8 @@ class WebGL2Run implements RunHandle {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
     const u = st.uniforms;
-    gl.uniform1f(u.u_stretch!, p.stretch);
+    gl.uniform1f(u.u_growth!, p.growth ?? p.stretch - 1);
+    gl.uniform1f(u.u_instMix!, p.instMix ?? 0);
     gl.uniform1f(u.u_origin!, p.origin); // region-relative; viewport positions the region
     gl.uniform2f(u.u_viewport!, p.region.w, p.region.h); // CSS px, matches posX/posY units
     gl.uniform4f(u.u_color!, p.color.r, p.color.g, p.color.b, p.color.a);
@@ -347,7 +359,7 @@ export class WebGL2Backend implements RenderBackend {
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, grid.indices, gl.STATIC_DRAW);
 
     const uNames = [
-      'u_lut', 'u_lutSize', 'u_stretch', 'u_origin', 'u_viewport', 'u_msdfAtlas',
+      'u_lut', 'u_lutSize', 'u_growth', 'u_instMix', 'u_origin', 'u_viewport', 'u_msdfAtlas',
       'u_color', 'u_pxRange', 'u_atlasSize', 'u_grainIntensity', 'u_aberration', 'u_inkDilate',
       'u_stretchDir', 'u_time', 'u_dispIntensity', 'u_dispScale', 'u_noise', 'u_hasNoise',
     ];

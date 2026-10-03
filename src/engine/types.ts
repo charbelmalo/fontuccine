@@ -46,10 +46,10 @@ export interface FontuccineConfig {
   /** Slices per axis (analysis LUT resolution). */
   lutResolution?: number;
   /**
-   * Cap on the share of the total growth a single slice may absorb, as a
-   * multiple of its even share (1/slices). Default 4. Keeps diagonal-only
-   * glyphs (`w`, `v`, `y`) from collapsing their apexes into a slab at high
-   * ratios; `Infinity` disables the cap (raw tangent-aligned profile).
+   * LEGACY. Share cap of the old flex-only stretch model (default 4). The SVG
+   * and WebGL tiers now stretch through a width plan (real variable-font
+   * instances, then straight-column + tracking residual; core/width-plan.ts)
+   * and only fall back to this model when no plan can be built.
    */
   maxShareFactor?: number;
 

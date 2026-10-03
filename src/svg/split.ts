@@ -278,3 +278,23 @@ export function serializeGlyph(
 ): string {
   return contoursToPathData(remapContours(contours, remap, penX), precision);
 }
+
+/**
+ * Serialize plain outline commands translated by `penX` (no remap) — the
+ * width plan's instance-blend frames, where the outline itself is the
+ * interpolated design and nothing is sliced.
+ */
+export function commandsToPathData(commands: PathCommand[], penX = 0, precision = 3): string {
+  const contours = commandsToContours(commands);
+  if (penX !== 0) {
+    for (const segs of contours) {
+      for (const seg of segs) {
+        seg.p0 = { x: seg.p0.x + penX, y: seg.p0.y };
+        seg.p1 = { x: seg.p1.x + penX, y: seg.p1.y };
+        if (seg.type !== 'L') seg.p2 = { x: seg.p2.x + penX, y: seg.p2.y };
+        if (seg.type === 'C') seg.p3 = { x: seg.p3.x + penX, y: seg.p3.y };
+      }
+    }
+  }
+  return contoursToPathData(contours, precision);
+}

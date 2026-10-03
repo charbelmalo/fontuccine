@@ -24,6 +24,10 @@ export interface LoadedFont {
   /** Advance (font units) for any char, including blanks — undefined when only a
    *  pre-parsed ParsedFont was supplied (no raw font to read blank advances). */
   advanceOf?: (char: string) => number;
+  /** The sfnt bytes the outlines came from (WOFF already unpacked) — the width
+   *  ladder instances further wdth/XTRA locations from them. Absent for an
+   *  injected ParsedFont. */
+  buffer?: ArrayBuffer;
 }
 
 /** Variable-font axis request (user units), e.g. `{ wght: 700, opsz: 128 }`. */
@@ -159,5 +163,5 @@ export async function loadEngineFont(
     /* fvar/advance extraction is best-effort; outlines already succeeded */
   }
 
-  return { parsed, wdthAxis, ...(advanceOf ? { advanceOf } : {}) };
+  return { parsed, wdthAxis, buffer, ...(advanceOf ? { advanceOf } : {}) };
 }

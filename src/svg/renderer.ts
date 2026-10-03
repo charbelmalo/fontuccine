@@ -32,7 +32,9 @@ import type { Ticker } from '../interaction/ticker.ts';
 import { ticker as sharedTicker } from '../interaction/ticker.ts';
 import { prefersReducedMotion } from '../interaction/reduced-motion.ts';
 import type { SplitContour } from './split.ts';
-import { splitGlyph, serializeGlyph } from './split.ts';
+import { splitGlyph, serializeGlyph, commandsToPathData } from './split.ts';
+import type { WidthPlan } from '../core/width-plan.ts';
+import { resolveFrame, layoutFrame, maxRunWidth } from '../core/width-plan.ts';
 import { createOverlay } from '../dom/overlay.ts';
 import type { Overlay, WrapMode } from '../dom/overlay.ts';
 
@@ -65,6 +67,12 @@ export interface SvgGlyph {
 export interface SvgRendererOptions {
   host: HTMLElement;
   glyphs: SvgGlyph[];
+  /**
+   * Width plan (core/width-plan.ts): real variable-font instances first, then
+   * straight-column + tracking residual. When given it drives every frame and
+   * `glyphs[i].flex` is unused; without it the legacy flex-slice model runs.
+   */
+  plan?: WidthPlan;
   /** Per-frame stretch source (a StretchController or anything with `.value`). */
   controller: StretchSource;
   /** Source text (defaults to host.textContent). */
@@ -143,6 +151,17 @@ export function createSvgRenderer(options: SvgRendererOptions): SvgRenderer {
     svg.setAttribute('stroke-linecap', 'round');
   }
 
+  const plan = options.plan;
+  // Residual frames slice an END step's outline at its own slice grid.
+  const endContours = (k: number): SplitContour[][] =>
+    plan
+      ? plan.steps[k].glyphs.map((g) =>
+          g.commands.length ? splitGlyph(g.commands, g.bounds, g.weights.length) : [],
+        )
+      : [];
+  const residualContours: Array<SplitContour[][] | undefined> = [];
+  const contoursFor = (k: number): SplitContour[][] => (residualContours[k] ??= endContours(k));
+
   const prepared: PreparedGlyph[] = glyphs.map((g) => {
     const path = doc.createElementNS(SVG_NS, 'path') as SVGPathElement;
     if (g.char) path.setAttribute('data-char', g.char);
@@ -150,7 +169,7 @@ export function createSvgRenderer(options: SvgRendererOptions): SvgRenderer {
     svg.appendChild(path);
     return {
       path,
-      contours: splitGlyph(g.commands, g.bounds, g.flex.length),
+      contours: plan ? [] : splitGlyph(g.commands, g.bounds, g.flex.length),
       layout: {
         profile: g.flex,
         bounds: g.bounds,
@@ -163,10 +182,14 @@ export function createSvgRenderer(options: SvgRendererOptions): SvgRenderer {
   // --- static viewBox sized to the MAX-stretch run so per-frame widths always
   //     fit (only `d` changes per frame; the viewBox never does).
   const layoutGlyphs = prepared.map((p) => p.layout);
-  const maxRun = layoutRun(layoutGlyphs, { stretch: maxStretchRatio, axis: 'x', origin: 0 });
+  const maxRunW = plan
+    ? maxRunWidth(plan, maxStretchRatio)
+    : layoutRun(layoutGlyphs, { stretch: maxStretchRatio, axis: 'x', origin: 0 }).width;
   let minY = Infinity;
   let maxY = -Infinity;
-  for (const g of glyphs) {
+  const boxes = plan ? plan.steps.flatMap((s) => s.glyphs) : glyphs;
+  for (const g of boxes) {
+    if (g.commands.length === 0) continue;
     if (g.bbox.minY < minY) minY = g.bbox.minY;
     if (g.bbox.maxY > maxY) maxY = g.bbox.maxY;
   }
@@ -174,7 +197,7 @@ export function createSvgRenderer(options: SvgRendererOptions): SvgRenderer {
     minY = 0;
     maxY = unitsPerEm;
   }
-  const vbW = Math.max(1, maxRun.width);
+  const vbW = Math.max(1, maxRunW);
   const vbH = Math.max(1, maxY - minY);
   svg.setAttribute('viewBox', `0 ${minY} ${vbW} ${vbH}`);
   // em sizing → tracks host font-size through CSS (no per-frame read).
@@ -207,6 +230,20 @@ export function createSvgRenderer(options: SvgRendererOptions): SvgRenderer {
   /** Lay out at `stretch` and rewrite every glyph's `d` (WRITE only). */
   function paint(stretch: number): void {
     lastStretch = stretch;
+    if (plan) {
+      const frame = resolveFrame(plan, stretch);
+      const lay = layoutFrame(plan, frame);
+      const contours = frame.growth !== 0 ? contoursFor(frame.k1) : null;
+      for (let i = 0; i < prepared.length; i++) {
+        const fg = lay.glyphs[i];
+        let d = '';
+        if (fg.remap && contours) d = serializeGlyph(contours[i], fg.remap, fg.penX, precision);
+        else if (fg.commands) d = commandsToPathData(fg.commands, fg.penX, precision);
+        else d = commandsToPathData(plan.steps[frame.k1].glyphs[i].commands, fg.penX, precision);
+        prepared[i].path.setAttribute('d', d);
+      }
+      return;
+    }
     const run = layoutRun(layoutGlyphs, { stretch, axis: 'x', origin: 0 });
     for (let i = 0; i < prepared.length; i++) {
       const p = prepared[i];

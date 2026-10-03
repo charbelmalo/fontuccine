@@ -60,6 +60,9 @@ export async function mountHarness(params: URLSearchParams, fontTtf: string): Pr
     "font-family:'Roboto Flex VF',sans-serif\">HARNESS</h1></main>";
 
   const host = document.getElementById('hero') as HTMLElement;
+  // Optional `size` (CSS px) / `weight` overrides for close-up captures.
+  if (params.get('size')) host.style.fontSize = `${parseFloat(params.get('size')!)}px`;
+  if (params.get('weight')) host.style.fontWeight = params.get('weight')!;
   const tier = (params.get('tier') ?? 'auto') as FontuccineConfig['tier'];
   const ratio = parseFloat(params.get('ratio') ?? '2.5');
   const text = params.get('text') ?? 'Ho';

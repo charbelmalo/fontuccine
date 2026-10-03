@@ -11,6 +11,17 @@
  *      ONE texture, so a whole run draws with zero rebinds and zero per-frame
  *      buffer uploads — only `u_stretch`/`u_origin` (+ effect scalars) change.
  *
+ *   3. TWO DESIGN INSTANCES per glyph (core/width-plan.ts): every instance
+ *      carries the ink box + atlas rect of two neighbouring variable-font
+ *      instances; `u_instMix` blends their geometry in the vertex stage and
+ *      their distance fields in the fragment stage (same normalized box
+ *      coordinate in both fields ⇒ the outline blend, while edges move less
+ *      than the field range — engine/width-ladder.ts bounds that). The
+ *      residual widening is `u_growth · (leftSlope + inkSlope · C(u))` with C
+ *      the cumulative STRAIGHT-column weights, so diagonals never widen.
+ *      The legacy flex model is the special case L0 = L1, u_instMix = 0,
+ *      u_growth = stretch − 1, leftSlope = origin, inkSlope = width, C = flex.
+ *
  * The LUT is sampled with an explicit two-tap texelFetch `mix()` (not hardware
  * LINEAR) so we never depend on OES_texture_float_linear for R32F.
  *
@@ -26,23 +37,26 @@ precision highp float;
 // Shared subdivided-quad grid (slice-grid.ts): box coords in [0,1]^2.
 in vec2 a_boxCoord;
 
-// Instanced, STATIC per-glyph attributes (uploaded once; never per frame).
-in float a_glyphOrigin;   // origin factor: inkLeft = u_origin + u_stretch*a_glyphOrigin
-in float a_glyphWidth;    // W = bounds.max - bounds.min (unstretched ink width, px)
-in vec2  a_glyphY;        // (yTop_px from run top, height_px) SVG-down placement (no stretch)
-in vec2  a_atlasUVOrigin; // atlas UV at box (0,0)  (image-space, may carry flipped V)
-in vec2  a_atlasUVSize;   // atlas UV delta across the box (size.y may be negative)
+// Instanced, STATIC per-glyph attributes (uploaded per instance pair; never per frame).
+in vec2  a_left;          // ink left (px from run origin) in instance 0 / instance 1
+in vec2  a_width;         // ink width (px) in instance 0 / instance 1
+in vec2  a_y0;            // instance 0 (yTop_px from run top, height_px), SVG-down
+in vec2  a_y1;            // instance 1 (yTop_px, height_px)
+in vec4  a_uv0;           // instance 0 atlas rect: UV at box (0,0) + UV delta across the box
+in vec4  a_uv1;           // instance 1 atlas rect
 in float a_lutRow;        // this glyph's row in the packed LUT texture
-in vec2  a_quadX;         // (padLeft, padRight) beyond the ink box, in ink-width units
-in vec2  a_quadY;         // (padTop, padBottom) beyond the ink box, in ink-height units
+in vec2  a_slopes;        // residual px per unit growth: (left edge, ink width)
+in vec4  a_quad;          // (padLeft, padRight, padTop, padBottom) beyond the ink box, ink units
 
 uniform sampler2D u_lut;      // R32F, (N+1) x glyphCount, NEAREST; holds C(u)
 uniform ivec2 u_lutSize;      // (N+1, glyphCount)
-uniform float u_stretch;      // horizontal stretch ratio (1 = identity)
+uniform float u_growth;       // residual growth (legacy model: stretch - 1)
+uniform float u_instMix;      // blend instance 0 -> 1
 uniform float u_origin;       // run origin in device px
 uniform vec2  u_viewport;     // device px viewport (for clip mapping)
 
 out vec2 v_atlasUV;
+out vec2 v_atlasUV1;
 
 // Two-tap linear sample of the cumulative-flex LUT at normalized u for this row.
 float sampleCumFlex(float u, int row) {
@@ -63,20 +77,22 @@ void main() {
   // C(u) is constant (0 or 1), so the extension is an exact linear continuation.
   float bx = a_boxCoord.x;
   float by = a_boxCoord.y;
-  float uOrig = bx <= 0.0 ? -a_quadX.x : (bx >= 1.0 ? 1.0 + a_quadX.y : bx);
-  float vOrig = by <= 0.0 ? -a_quadY.x : (by >= 1.0 ? 1.0 + a_quadY.y : by);
+  float uOrig = bx <= 0.0 ? -a_quad.x : (bx >= 1.0 ? 1.0 + a_quad.y : bx);
+  float vOrig = by <= 0.0 ? -a_quad.z : (by >= 1.0 ? 1.0 + a_quad.w : by);
   float C = sampleCumFlex(uOrig, int(a_lutRow + 0.5));
-  // remapped normalized position: identity at stretch=1, flex-weighted growth.
-  float remapped = uOrig + (u_stretch - 1.0) * C;
 
-  float inkLeft = u_origin + u_stretch * a_glyphOrigin;
-  float posX = inkLeft + a_glyphWidth * remapped;
+  // Instance blend (identity when a_left.x == a_left.y etc.), then the residual:
+  // the left edge moves by growth*leftSlope, the ink widens only where C rises.
+  float inkLeft = u_origin + mix(a_left.x, a_left.y, u_instMix);
+  float width = mix(a_width.x, a_width.y, u_instMix);
+  float posX = inkLeft + width * uOrig + u_growth * (a_slopes.x + a_slopes.y * C);
   // Glyph geometry is SVG-down (y increases downward, like the SVG tier): box y=0
   // is the glyph's visual top (bbox.minY), box y=1 its visual bottom (bbox.maxY).
-  // a_glyphY = (yTop_px = top offset from run top, height_px); place straight down.
-  float posY = a_glyphY.x + vOrig * a_glyphY.y;
+  vec2 gy = mix(a_y0, a_y1, u_instMix);
+  float posY = gy.x + vOrig * gy.y;
 
-  v_atlasUV = a_atlasUVOrigin + vec2(uOrig, vOrig) * a_atlasUVSize;
+  v_atlasUV = a_uv0.xy + vec2(uOrig, vOrig) * a_uv0.zw;
+  v_atlasUV1 = a_uv1.xy + vec2(uOrig, vOrig) * a_uv1.zw;
 
   vec2 clip = vec2(posX / u_viewport.x * 2.0 - 1.0, 1.0 - posY / u_viewport.y * 2.0);
   gl_Position = vec4(clip, 0.0, 1.0);
@@ -87,6 +103,7 @@ export const FRAGMENT_SHADER = /* glsl */ `#version 300 es
 precision highp float;
 
 in vec2 v_atlasUV;
+in vec2 v_atlasUV1;
 out vec4 fragColor;
 
 uniform sampler2D u_msdfAtlas;
@@ -104,13 +121,22 @@ uniform float u_dispIntensity;    // displacement warp strength (px)
 uniform vec2  u_dispScale;        // noise sampling scale
 uniform sampler2D u_noise;        // displacement noise texture
 uniform int   u_hasNoise;         // 1 when a displacement texture is bound
+uniform float u_instMix;          // blend of the two instances' distance fields
 
 float median3(vec3 v) { return max(min(v.r, v.g), min(max(v.r, v.g), v.b)); }
-float sampleSD(vec2 uv) { return median3(texture(u_msdfAtlas, uv).rgb) - 0.5; }
+// Instance 1's field is sampled at the same box coordinate (offset carried over).
+vec2 g_uvDelta;
+float sampleSD(vec2 uv) {
+  float d0 = median3(texture(u_msdfAtlas, uv).rgb) - 0.5;
+  if (u_instMix <= 0.0) return d0;
+  float d1 = median3(texture(u_msdfAtlas, uv + g_uvDelta).rgb) - 0.5;
+  return mix(d0, d1, u_instMix);
+}
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7)) + u_time) * 43758.5453); }
 
 void main() {
   vec2 uv = v_atlasUV;
+  g_uvDelta = v_atlasUV1 - v_atlasUV;
 
   // Displacement: warp the sampling UV by a noise texture BEFORE distance
   // sampling — the distance field stays continuous so edges do not tear.

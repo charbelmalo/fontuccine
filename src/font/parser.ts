@@ -77,17 +77,8 @@ export class FontUnavailableError extends Error {
  */
 export class OpentypeParser implements FontParser {
   parse(buffer: ArrayBuffer, opts: ParseOptions = {}): ParsedFont {
-    if (!buffer || buffer.byteLength === 0) {
-      throw new FontUnavailableError('Empty font buffer');
-    }
-    let font: OtFont;
-    try {
-      font = opentype.parse(buffer);
-    } catch (err) {
-      throw new FontUnavailableError(`opentype.js failed to parse font: ${String(err)}`);
-    }
+    const font = openOt(buffer);
     const fontSize = opts.fontSize ?? 1000;
-    const scale = fontSize / font.unitsPerEm;
 
     // Variable-font instancing (gvar deltas on the raw TrueType points).
     let instancer: Instancer | null = null;
@@ -105,61 +96,119 @@ export class OpentypeParser implements FontParser {
         };
       }
     }
-    const cache = new Map<string, { points: OtPoint[]; advance: number } | null>();
-    const instanced = (char: string) => {
-      let hit = cache.get(char);
-      if (hit === undefined) {
-        const g = font.charToGlyph(char);
-        hit = g ? instancedPoints(font, g, instancer!, new Set()) : null;
-        cache.set(char, hit);
-      }
-      return hit;
-    };
+    return makeParsed(font, fontSize, instancer, variation);
+  }
+}
 
-    return {
-      unitsPerEm: fontSize,
-      name: font.names?.fullName?.en,
-      ...(variation ? { variation } : {}),
-      glyph(char: string): ParsedGlyph | null {
-        const g = font.charToGlyph(char);
-        if (!g) return null;
-        if (instancer) {
-          const inst = instanced(char);
-          if (!inst) return null;
-          const path = pathFromPoints(inst.points, scale);
-          if (path.commands.length === 0) return null;
-          const bb = path.getBoundingBox();
-          return {
-            commands: path.commands as PathCommand[],
-            advanceWidth: inst.advance * scale,
-            bbox: { minX: bb.x1, minY: bb.y1, maxX: bb.x2, maxY: bb.y2 },
-          };
-        }
-        const path = g.getPath(0, 0, fontSize);
-        if (!path.commands || path.commands.length === 0) return null;
-        // Path bbox is already at fontSize scale and in SVG-down space,
-        // matching the emitted commands.
+function openOt(buffer: ArrayBuffer): OtFont {
+  if (!buffer || buffer.byteLength === 0) {
+    throw new FontUnavailableError('Empty font buffer');
+  }
+  try {
+    return opentype.parse(buffer);
+  } catch (err) {
+    throw new FontUnavailableError(`opentype.js failed to parse font: ${String(err)}`);
+  }
+}
+
+/**
+ * A ParsedFont over an already-parsed opentype.js Font. With an instancer the
+ * outlines ALWAYS go through the gvar point path (even at the default
+ * location), so every instance of the same glyph has the same command list —
+ * the property width-plan.ts relies on to blend instances point by point.
+ */
+function makeParsed(font: OtFont, fontSize: number, instancer: Instancer | null, variation?: VariationStatus): ParsedFont {
+  const scale = fontSize / font.unitsPerEm;
+  const cache = new Map<string, { points: OtPoint[]; advance: number } | null>();
+  const instanced = (char: string) => {
+    let hit = cache.get(char);
+    if (hit === undefined) {
+      const g = font.charToGlyph(char);
+      hit = g ? instancedPoints(font, g, instancer!, new Set()) : null;
+      cache.set(char, hit);
+    }
+    return hit;
+  };
+
+  return {
+    unitsPerEm: fontSize,
+    name: font.names?.fullName?.en,
+    ...(variation ? { variation } : {}),
+    glyph(char: string): ParsedGlyph | null {
+      const g = font.charToGlyph(char);
+      if (!g) return null;
+      if (instancer) {
+        const inst = instanced(char);
+        if (!inst) return null;
+        const path = pathFromPoints(inst.points, scale);
+        if (path.commands.length === 0) return null;
         const bb = path.getBoundingBox();
         return {
           commands: path.commands as PathCommand[],
-          advanceWidth: (g.advanceWidth ?? 0) * scale,
+          advanceWidth: inst.advance * scale,
           bbox: { minX: bb.x1, minY: bb.y1, maxX: bb.x2, maxY: bb.y2 },
         };
-      },
-      advance(char: string): number {
-        const g = font.charToGlyph(char);
-        if (!g) return 0;
-        if (instancer) return (instanced(char)?.advance ?? 0) * scale;
-        return (g.advanceWidth ?? 0) * scale;
-      },
-      kernPair(a: string, b: string): number {
-        const ga = font.charToGlyph(a);
-        const gb = font.charToGlyph(b);
-        if (!ga || !gb) return 0;
-        return (font.getKerningValue(ga, gb) || 0) * scale;
-      },
-    };
-  }
+      }
+      const path = g.getPath(0, 0, fontSize);
+      if (!path.commands || path.commands.length === 0) return null;
+      // Path bbox is already at fontSize scale and in SVG-down space,
+      // matching the emitted commands.
+      const bb = path.getBoundingBox();
+      return {
+        commands: path.commands as PathCommand[],
+        advanceWidth: (g.advanceWidth ?? 0) * scale,
+        bbox: { minX: bb.x1, minY: bb.y1, maxX: bb.x2, maxY: bb.y2 },
+      };
+    },
+    advance(char: string): number {
+      const g = font.charToGlyph(char);
+      if (!g) return 0;
+      if (instancer) return (instanced(char)?.advance ?? 0) * scale;
+      return (g.advanceWidth ?? 0) * scale;
+    },
+    kernPair(a: string, b: string): number {
+      const ga = font.charToGlyph(a);
+      const gb = font.charToGlyph(b);
+      if (!ga || !gb) return 0;
+      return (font.getKerningValue(ga, gb) || 0) * scale;
+    },
+  };
+}
+
+/** One parse, many instances (see openVariableFont). */
+export interface VariableFontHandle {
+  /** The font's fvar axes (user-space ranges). */
+  readonly axes: ReadonlyArray<{ tag: string; min: number; default: number; max: number }>;
+  /**
+   * The font at a user-space location (missing axes take their default,
+   * values clamp to the designed range). Outlines always come from the gvar
+   * point path, so all instances share one command structure per glyph.
+   */
+  at(location: Readonly<Record<string, number>>): ParsedFont;
+}
+
+/**
+ * Open a TrueType-flavoured variable font once and instance it at any number
+ * of locations (the width ladder needs a few dozen). Null when the font cannot
+ * be instanced (static, CFF2, no gvar) — callers then have no width axis.
+ */
+export function openVariableFont(buffer: ArrayBuffer, opts: { fontSize?: number } = {}): VariableFontHandle | null {
+  const probe = createInstancer(buffer, {});
+  if (!probe.ok) return null;
+  const font = openOt(buffer);
+  const fontSize = opts.fontSize ?? 1000;
+  return {
+    axes: probe.instancer.axes,
+    at(location) {
+      const r = createInstancer(buffer, location);
+      if (!r.ok) throw new FontUnavailableError(`variable font instancing failed (${r.reason})`);
+      return makeParsed(font, fontSize, r.instancer, {
+        requested: { ...location },
+        applied: true,
+        location: r.instancer.location,
+      });
+    },
+  };
 }
 
 /** Convenience factory: parse a buffer with the default (opentype.js) backend. */

@@ -6,24 +6,33 @@ proximity, hover, or your own signal), typographically correct on **any**
 outline font.
 
 `scale()` distorts everything uniformly — stems fatten, serifs smear, counters
-collapse. Fontuccine instead computes a **tangent-aligned flex profile** per
-glyph: every slice gets a stretchiness weight from how aligned its outline
-tangents are with the stretch direction, so perpendicular strokes, caps, and
-serifs stay rigid while aligned runs and empty space absorb the stretch. The
-result looks *designed*, at any ratio.
+collapse. Fontuccine widens text the way a type designer would:
+
+1. **Real wider instances first.** For a variable font the SVG/WebGL tiers walk
+   the font's own width axes (`wdth` to its maximum, then `XTRA`; the reverse to
+   compress) with the in-house instancer, and blend neighbouring instances
+   placed close enough that the blend stays within 1/500 em of the true
+   instance. Every letter, diagonals included, keeps a shape its designer drew.
+2. **Then only straight horizontal parts.** Past the widest designed instance,
+   the remaining width goes only into columns whose every visible edge is
+   near-horizontal (bars, the flat tops of bowls, the inside of `o`/`e`/`H`),
+   plus even letter-spacing between glyphs. Columns crossed by a diagonal never
+   widen, so `v w x y k A` are never sheared, bent or thickened.
+
+A static font (or a font without a width axis) uses step 2 alone.
 
 ![horizontal stretch demo](demos/demo-horizontal.png)
 
 *Real browser capture (headless Chrome, 2× DPR) of the WebGL tier on Roboto Flex
 at 2.5×: original DOM text, CSS `scaleX(2.5)`, and Fontuccine's tangent-aligned
-stretch. Stems, bowls and the `w` keep their weight; the aligned runs absorb the
-width.*
+stretch. Captured with the earlier flex-only model; not yet regenerated for the
+width-plan model described above.*
 
 - **Zero required runtime deps** — `opentype.js` is imported lazily, only when a tier actually parses an outline (never in the base bundle).
 - **Three render tiers, auto-dispatched** — WebGL2, SVG, or native variable-font `wdth`, picked from device capability (override with `tier`). Every tier honours the host's CSS `color`; every fall-through is written to `instance.notes`.
 - **Renders the instance you styled** — for a variable font the SVG/WebGL tiers instance the outlines at the element's computed `font-weight` / `font-stretch` / `font-style` / `font-optical-sizing` / `font-variation-settings` (own `gvar`/`avar` interpolation, verified against fontTools), so a `font-weight: 700` heading stays bold when the overlay takes over — the same design instance the browser draws.
 - **Horizontal today** — `axis: 'horizontal'` is the implemented axis; `'vertical'` / `'dual'` are accepted but not rendered yet (see *Key config*).
-- **Correct by construction** — 188 tests over the math core (17/17 geometric invariants), the MSDF generator against real Roboto Flex glyphs, tier parity, kerning, winding, worker transport + main-thread fallback, and SSR safety; `npm run harness` adds a real-Chrome pixel gate (WebGL ink vs exact SVG ink).
+- **Correct by construction** — 193 tests over the math core (17/17 geometric invariants), the MSDF generator against real Roboto Flex glyphs, tier parity, kerning, winding, worker transport + main-thread fallback, and SSR safety; `npm run harness` adds a real-Chrome pixel gate (WebGL ink vs exact SVG ink).
 - **Any framework, or none** — a vanilla `attach()` core plus a thin React wrapper (`fontuccine/react`). Real DOM text always stays for selection / SEO / a11y.
 
 ## Install
@@ -119,8 +128,8 @@ double-mount safe.
 
 ## Render tiers
 
-One flex profile reduces to a **cumulative remap LUT** consumed identically by
-three renderers, so the look is stable across the fall-through ladder:
+The SVG and WebGL tiers consume the same width plan (instances + straight-column
+weights), so the look is stable across the fall-through ladder:
 
 | Tier | Backend | How it stretches |
 |---|---|---|
@@ -142,8 +151,8 @@ directly via `fontuccine/webgl`, `fontuccine/svg`, or `fontuccine/vf`.
 |---|---|
 | `axis` | `'horizontal'` — the only axis rendered in 0.1.x. `'vertical'` and `'dual'` type-check and are accepted for forward compatibility, but every tier renders horizontally and logs a one-time `console.warn` |
 | `maxStretchRatio` / `minStretchRatio` | stretch bounds |
-| `edgeProtection` | Pagurek's *k* — high = hard 9-slice (rigid edges), low = uniform |
-| `maxShareFactor` | cap on how much of the total growth one slice may take (default 4× its even share). Keeps diagonal-only glyphs like `w`/`v`/`y` from collapsing into a slab; set `Infinity` for the raw profile |
+| `edgeProtection` | Pagurek's *k* used to find stroke direction per column (default 8) |
+| `maxShareFactor` | legacy: share cap of the old flex-only model, used only if a renderer is driven without a width plan |
 | `lutResolution` | slices per axis (analysis resolution) |
 | `trigger` | `'scroll-velocity' \| 'mouse-proximity' \| 'hover' \| 'custom'` |
 | `physics` / `easingCurve` | spring (`stiffness`/`damping`) or eased motion |
@@ -170,7 +179,7 @@ npm run dev     # http://localhost:5173 — hot-reloads the engine source
 ```bash
 npm install
 npm run build      # tsup → dist/ (ESM + .d.ts, per-tier entry points)
-npm test           # node --test — 188 tests
+npm test           # node --test — 193 tests
 npm run typecheck
 npm run harness    # headless Chrome: tier matrix + WebGL↔SVG pixel gate (needs Chrome)
 npm run demo       # scripts/demo.ts — core-math SVG illustration (not the renderer)

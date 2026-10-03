@@ -33,8 +33,11 @@ test('analyzeGlyph returns the AnalyzeResponse shape', () => {
   assert.ok(res.profiles.x?.flex instanceof Float32Array);
   assert.ok(res.profiles.y?.flex instanceof Float32Array);
   assert.equal(res.profiles.x?.flex.length, DEFAULT_PARAMS.slices);
-  // transferables are the flex buffers
-  assert.equal(collectTransferables(res).length, 2);
+  // x also carries the straight-column profile (core/straight-profile.ts)
+  assert.ok(res.profiles.x?.straight instanceof Float32Array);
+  assert.equal(res.profiles.x?.straight?.length, DEFAULT_PARAMS.slices);
+  // transferables are the flex buffers + the x straight profile
+  assert.equal(collectTransferables(res).length, 3);
 });
 
 test('AnalysisClient inline fallback resolves and caches', async () => {

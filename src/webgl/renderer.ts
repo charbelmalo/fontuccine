@@ -13,8 +13,10 @@
  *    draws into its own screen region via scissor — never a context per element.
  *  - Static-per-glyph work (flex→cumulative-flex LUT, MSDF raster, instance
  *    attributes) is built ONCE off the main thread (MSDF in a worker) and NEVER
- *    per frame. Per frame only `u_stretch`/`u_origin` (+ effect scalars) change:
- *    zero buffer re-uploads in steady state.
+ *    per frame. Per frame only `u_growth`/`u_instMix`/`u_origin` (+ effect
+ *    scalars) change: zero buffer re-uploads in steady state. With a width plan
+ *    the instance buffer is rebuilt only when the frame moves to a different
+ *    pair of design instances (a handful of times across a full sweep).
  *  - Writes happen only in the RENDER phase; the only DOM read (host rect) is a
  *    cached READ-phase measure, invalidated by ResizeObserver + scroll.
  *  - Reduced motion / print ⇒ ONE static draw, NO per-frame callback.
@@ -39,16 +41,19 @@ import { createOverlay } from '../dom/overlay.ts';
 import type { Overlay, WrapMode } from '../dom/overlay.ts';
 import type { WebglGlyph, EffectsConfig, RGBAColor } from './types.ts';
 import { buildFlexCumulative } from './parity.ts';
+import type { WidthPlan, WidthFrame } from '../core/width-plan.ts';
+import { resolveFrame, cumulativeWeights, residualSlopes } from '../core/width-plan.ts';
+import type { PathCommand, BBox } from '../core/types.ts';
 import { packLUTAtlas } from './lut-texture.ts';
 import { MsdfAtlas } from './msdf/atlas.ts';
 import { MsdfClient } from './msdf/client.ts';
 import type { MSDFBitmap } from './msdf/generator.ts';
 import type { RenderBackend, RunHandle, GlyphRunData } from './gl/device.ts';
+import { FLOATS_PER_INSTANCE } from './gl/device.ts';
 import { acquireSharedBackend, releaseSharedBackend, DEFAULT_GRID_SLICES } from './gl/shared.ts';
 
 const DEFAULT_ATLAS_SIZE = 2048;
 const DEFAULT_CELL = 96;
-const FLOATS_PER_INSTANCE = 13;
 
 export interface StretchSource {
   readonly value: number;
@@ -59,6 +64,12 @@ export interface StretchSource {
 export interface WebglRendererOptions {
   host: HTMLElement;
   glyphs: WebglGlyph[];
+  /**
+   * Width plan (core/width-plan.ts): real variable-font instances, then the
+   * straight-column + tracking residual. When given it drives every frame and
+   * `glyphs[i].flex` is unused; without it the legacy flex-slice model runs.
+   */
+  plan?: WidthPlan;
   controller: StretchSource;
   text?: string;
   wrap?: WrapMode;
@@ -105,16 +116,24 @@ export interface WebglRenderer {
   readonly overlay: Overlay;
 }
 
+/** One glyph of one design instance (a plan step; the legacy model has one step). */
 interface GlyphStatic {
-  originFactor: number; // font units (prefixAdvance + bounds.min)
+  originFactor: number; // font units (prefixAdvance + bounds.min) at growth 0
   width: number; // font units (bounds.max - bounds.min)
   bounds: { min: number; max: number };
   yTop: number; // font units from run top
   height: number; // font units
-  cumFlex: Float32Array; // normalized cumulative flex LUT
-  glyphKey: string;
+  commands: PathCommand[];
+  bbox: BBox;
+  glyphKey: string; // atlas / MSDF cache key (unique per step)
   bitmap?: MSDFBitmap;
   uv?: { origin: [number, number]; size: [number, number] };
+}
+
+/** Atlas rect + padding of one glyph cell, in the instance attribute units. */
+interface CellRect {
+  uv: [number, number, number, number];
+  pad: [number, number, number, number]; // ink-width / ink-height units
 }
 
 export function createWebglRenderer(options: WebglRendererOptions): WebglRenderer {
@@ -138,6 +157,7 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
   let color: RGBAColor = options.color ?? { r: 0, g: 0, b: 0, a: 1 };
   const colorFromCss = !options.color; // follow the host's computed CSS color
   const effects = options.effects ?? {};
+  const plan = options.plan;
   const slices = glyphs[0]?.flex.length ?? DEFAULT_GRID_SLICES;
 
   // Acquire the shared backend (or the injected one). Null ⇒ unsupported.
@@ -151,7 +171,18 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
   // Shared MSDF atlas (slot LRU). One per renderer instance's glyph set; the
   // backend's atlas texture is shared, cells are packed here.
   const rasterPad = Math.ceil(pxRange / 2) + 2; // generator default padding
-  const cellSize = Math.max(DEFAULT_CELL, Math.ceil(fontSizeRaster * 1.25) + 2 * rasterPad);
+  // Cells must hold the widest instance's raster (a wdth/XTRA max 'W' can be
+  // ~1.4 em wide); an undersized cell would spill into its neighbour.
+  let widestEm = 1.25;
+  for (const sr of plan ? plan.steps.map((st) => st.glyphs) : glyphs.length ? [glyphs] : []) {
+    for (const g of sr) {
+      const w = (g.bbox.maxX - g.bbox.minX) / unitsPerEm;
+      const h = (g.bbox.maxY - g.bbox.minY) / unitsPerEm;
+      if (Number.isFinite(w) && w > widestEm) widestEm = w;
+      if (Number.isFinite(h) && h > widestEm) widestEm = h;
+    }
+  }
+  const cellSize = Math.max(DEFAULT_CELL, Math.ceil(fontSizeRaster * widestEm) + 2 * rasterPad + 2);
   const atlas = new MsdfAtlas({ size: DEFAULT_ATLAS_SIZE, cellSize, dpr: options.dpr ?? 1 });
 
   // --- proxy render layer (inert) so the frozen overlay machinery applies.
@@ -193,35 +224,51 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     kernBefore: g.kernBefore,
   }));
 
-  // prefixAdvance_i in font units (matches layoutRun's cursor derivation).
+  // Design instances: the plan's steps, or the single legacy run.
+  const stepRuns: Array<ReadonlyArray<{ char?: string; commands: PathCommand[]; bounds: { min: number; max: number }; advanceWidth: number; kernBefore?: number; bbox: BBox }>> =
+    plan ? plan.steps.map((st) => st.glyphs) : [glyphs];
+  const stepKeys = plan
+    ? plan.steps.map((st, k) => (st.location ? JSON.stringify(st.location) : `step${k}`))
+    : [''];
+
+  // Run vertical extent over every instance (SVG-down: minY is the top).
   let maxAscent = -Infinity;
   let minDescent = Infinity;
-  for (const g of glyphs) {
-    if (g.bbox.maxY > maxAscent) maxAscent = g.bbox.maxY;
-    if (g.bbox.minY < minDescent) minDescent = g.bbox.minY;
+  for (const sr of stepRuns) {
+    for (const g of sr) {
+      if (g.commands.length === 0) continue;
+      if (g.bbox.maxY > maxAscent) maxAscent = g.bbox.maxY;
+      if (g.bbox.minY < minDescent) minDescent = g.bbox.minY;
+    }
   }
   if (!Number.isFinite(maxAscent)) {
     maxAscent = unitsPerEm;
     minDescent = 0;
   }
 
-  const statics: GlyphStatic[] = [];
-  let prefix = 0;
-  for (let i = 0; i < glyphs.length; i++) {
-    const g = glyphs[i];
-    const kb = g.kernBefore ?? 0;
-    prefix += kb; // prefixAdvance_i = kernBefore_i + Σ_{j<i}(adv_j + kern_j)
-    statics.push({
-      originFactor: prefix + g.bounds.min,
-      width: g.bounds.max - g.bounds.min,
-      bounds: { min: g.bounds.min, max: g.bounds.max },
-      yTop: g.bbox.minY - minDescent,
-      height: g.bbox.maxY - g.bbox.minY,
-      cumFlex: buildFlexCumulative(g.flex),
-      glyphKey: g.char ?? `g${i}`,
-    });
-    prefix += g.advanceWidth; // advance for the NEXT glyph's prefix
-  }
+  // prefixAdvance_i in font units (matches layoutRun's cursor derivation).
+  const stepStatics: GlyphStatic[][] = stepRuns.map((sr, k) => {
+    const out: GlyphStatic[] = [];
+    let prefix = 0;
+    for (let i = 0; i < sr.length; i++) {
+      const g = sr[i];
+      prefix += g.kernBefore ?? 0; // prefixAdvance_i = kernBefore_i + Σ_{j<i}(adv_j + kern_j)
+      const key = g.char ?? `g${i}`;
+      out.push({
+        originFactor: prefix + g.bounds.min,
+        width: g.bounds.max - g.bounds.min,
+        bounds: { min: g.bounds.min, max: g.bounds.max },
+        yTop: g.bbox.minY - minDescent,
+        height: g.bbox.maxY - g.bbox.minY,
+        commands: g.commands,
+        bbox: g.bbox,
+        glyphKey: plan ? `${key}@${stepKeys[k]}` : key,
+      });
+      prefix += g.advanceWidth; // advance for the NEXT glyph's prefix
+    }
+    return out;
+  });
+  const legacyLUT = plan ? null : glyphs.map((g) => buildFlexCumulative(g.flex));
   const runFontUnitsHeight = maxAscent - minDescent;
 
   // --- lifecycle state
@@ -266,92 +313,214 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     img.src = disp.texture;
   }
 
-  // --- assemble the packed LUT atlas (static; row per glyph).
-  function buildLUTAtlas() {
-    return packLUTAtlas(statics.map((s) => s.cumFlex));
+  /** Exact atlas rect of a glyph's INK box + its padding (ink units). */
+  function cellRect(s: GlyphStatic, fresh: boolean): CellRect | null {
+    const bmp = s.bitmap;
+    if (!bmp || !backend) return null;
+    const cell = atlas.acquire(s.glyphKey, bmp.width, bmp.height);
+    const { x: cx, y: cy } = atlas.cellOrigin(cell.slot);
+    if (cell.isNew || fresh) backend.uploadAtlasCell(cx, cy, bmp);
+    // EXACT atlas UV rect for this glyph's INK box (box [0,1]² ↔ the float
+    // texel extents of [bounds.min,bounds.max]×[bbox.minY,bbox.maxY]; no
+    // ceil'd sizes, so registration is exact to the texel), plus the padding
+    // extents so the quad also covers the anti-aliasing ramp (a_quad).
+    const S = DEFAULT_ATLAS_SIZE;
+    const pad = bmp.padding;
+    const originX = bmp.originX ?? bmp.bbox.minX - pad / bmp.scale;
+    const originY = bmp.originY ?? bmp.bbox.maxY + pad / bmp.scale;
+    const tx0 = (s.bounds.min - originX) * bmp.scale; // ink left, texels from cell left
+    const tx1 = (s.bounds.max - originX) * bmp.scale;
+    const inkW = Math.max(1e-6, tx1 - tx0);
+    const tyTop = (originY - bmp.bbox.minY) * bmp.scale; // visual top, rows from cell top
+    const tyBot = (originY - bmp.bbox.maxY) * bmp.scale; // visual bottom (= pad)
+    const inkH = Math.max(1e-6, tyTop - tyBot);
+    const uvOx = (cx + tx0) / S;
+    const uvOy = (cy + tyTop) / S; // box y=0 (visual top)
+    const uvSx = inkW / S;
+    const uvSy = -inkH / S; // box y=1 (visual bottom)
+    s.uv = { origin: [uvOx, uvOy], size: [uvSx, uvSy] };
+    return {
+      uv: [uvOx, uvOy, uvSx, uvSy],
+      pad: [tx0 / inkW, (bmp.width - tx1) / inkW, (bmp.height - tyTop) / inkH, tyBot / inkH],
+    };
   }
 
-  // --- build/refresh the atlas cells + instance buffer, then upload the run.
-  function assembleAndUpload(): void {
+  /** Which instance pair (+ residual direction) the uploaded buffer encodes. */
+  let uploadedPair = '';
+  /** Font-unit geometry of the uploaded pair (runExtent without a GPU readback). */
+  let pairGeom: Float64Array = new Float64Array(0); // per glyph: L0 L1 W0 W1 slopeL slopeInk
+  const LEGACY_FRAME: WidthFrame = { k0: 0, k1: 0, t: 0, growth: 1, saturated: false };
+  const pairKey = (f: WidthFrame): string =>
+    `${live.v}:${f.k0},${f.k1},${f.growth > 0 ? '+' : f.growth < 0 ? '-' : '0'}`;
+
+  // Progressive atlas: a plan can hold a dozen-plus instances, and rasterising
+  // every one before the first frame delays it by ~1 s for a phrase. The
+  // instances the resting / extreme frames need are rasterised first; the rest
+  // stream in behind. Until then frames resolve over the LOADED instances only
+  // (`live.plan`, same total width, a coarser blend between the loaded ones),
+  // so the run is never drawn at the wrong width while the ladder fills in.
+  const stepLoaded: boolean[] = stepStatics.map(() => false);
+  let live: { plan: WidthPlan | null; map: number[]; v: number } = { plan: null, map: [0], v: 0 };
+  function refreshLive(): void {
+    const map: number[] = [];
+    for (let k = 0; k < stepStatics.length; k++) if (stepLoaded[k] || !plan) map.push(k);
+    let lp: WidthPlan | null = null;
+    if (plan) {
+      lp = map.length === plan.steps.length
+        ? plan
+        : { ...plan, steps: map.map((k) => plan.steps[k]), base: Math.max(0, map.indexOf(plan.base)) };
+    }
+    live = { plan: lp, map, v: live.v + 1 };
+  }
+  /** Frame for a stretch over the loaded instances (indices into `live.map`). */
+  const liveFrame = (stretch: number): WidthFrame =>
+    live.plan ? resolveFrame(live.plan, stretch) : LEGACY_FRAME;
+
+  /**
+   * Build + upload the instance buffer and LUT for one instance pair.
+   * `full` re-assigns every atlas cell (first build, context restore, font-size
+   * change); a pair switch only adds the cells it is missing.
+   */
+  function assembleAndUpload(frame: WidthFrame = liveFrame(Math.max(1, lastStretch || restingStretch)), full = true): void {
     if (!backend || destroyed) return;
     backend.ensureAtlas(DEFAULT_ATLAS_SIZE);
-    atlas.clear(); // fresh slot assignment (also used on context restore)
+    if (full) atlas.clear(); // fresh slot assignment (also used on context restore)
 
-    const instances = new Float32Array(statics.length * FLOATS_PER_INSTANCE);
+    const n = stepStatics[0].length;
+    const s0 = stepStatics[live.map[frame.k0]];
+    const s1 = stepStatics[live.map[frame.k1]];
+    const instances = new Float32Array(n * FLOATS_PER_INSTANCE);
+    const geom = new Float64Array(n * 6);
     const emPx = fontSizePx / unitsPerEm; // font units → css px
+    const luts: Float32Array[] = [];
 
-    for (let i = 0; i < statics.length; i++) {
-      const s = statics[i];
-      const bmp = s.bitmap;
-      if (!bmp) continue;
-      const cell = atlas.acquire(s.glyphKey, bmp.width, bmp.height);
-      if (cell.isNew) {
-        const { x, y } = atlas.cellOrigin(cell.slot);
-        backend.uploadAtlasCell(x, y, bmp);
+    // Residual slopes (font units per unit growth) on the pair's second step.
+    const lp = live.plan;
+    const planGlyphs = lp ? lp.steps[frame.k1].glyphs : null;
+    const slopes = lp ? residualSlopes(lp, frame.k1, frame.growth) : null;
+
+    for (let i = 0; i < n; i++) {
+      const a = s0[i];
+      const b = s1[i];
+      let slopeLeft: number;
+      let slopeInk: number;
+      if (planGlyphs && slopes) {
+        slopeLeft = slopes[i].left;
+        slopeInk = slopes[i].ink;
+        luts.push(cumulativeWeights(planGlyphs[i].weights));
+      } else {
+        // legacy flex model: posX = s·origin + W·(u + (s−1)·C(u))
+        slopeLeft = a.originFactor;
+        slopeInk = a.width;
+        luts.push(legacyLUT![i]);
       }
-      // EXACT atlas UV rect for this glyph's INK box (box [0,1]² ↔ the float
-      // texel extents of [bounds.min,bounds.max]×[bbox.minY,bbox.maxY]; no
-      // ceil'd sizes, so registration is exact to the texel), plus the padding
-      // extents so the quad also covers the anti-aliasing ramp (a_quadX/Y).
-      const { x: cx, y: cy } = atlas.cellOrigin(cell.slot);
-      const S = DEFAULT_ATLAS_SIZE;
-      const pad = bmp.padding;
-      const originX = bmp.originX ?? bmp.bbox.minX - pad / bmp.scale;
-      const originY = bmp.originY ?? bmp.bbox.maxY + pad / bmp.scale;
-      const tx0 = (s.bounds.min - originX) * bmp.scale; // ink left, texels from cell left
-      const tx1 = (s.bounds.max - originX) * bmp.scale;
-      const inkW = Math.max(1e-6, tx1 - tx0);
-      const tyTop = (originY - bmp.bbox.minY) * bmp.scale; // visual top, rows from cell top
-      const tyBot = (originY - bmp.bbox.maxY) * bmp.scale; // visual bottom (= pad)
-      const inkH = Math.max(1e-6, tyTop - tyBot);
-      const uvOx = (cx + tx0) / S;
-      const uvOy = (cy + tyTop) / S; // box y=0 (visual top)
-      const uvSx = inkW / S;
-      const uvSy = -inkH / S; // box y=1 (visual bottom)
-      s.uv = { origin: [uvOx, uvOy], size: [uvSx, uvSy] };
+      const g = i * 6;
+      geom[g] = a.originFactor;
+      geom[g + 1] = b.originFactor;
+      geom[g + 2] = a.width;
+      geom[g + 3] = b.width;
+      geom[g + 4] = slopeLeft;
+      geom[g + 5] = slopeInk;
 
+      const ca = cellRect(a, full);
+      const cb = b === a ? ca : cellRect(b, full);
+      if (!ca || !cb) continue;
       const o = i * FLOATS_PER_INSTANCE;
-      instances[o + 0] = s.originFactor * emPx; // css px
-      instances[o + 1] = s.width * emPx;
-      instances[o + 2] = s.yTop * emPx;
-      instances[o + 3] = s.height * emPx;
-      instances[o + 4] = uvOx;
-      instances[o + 5] = uvOy;
-      instances[o + 6] = uvSx;
-      instances[o + 7] = uvSy;
-      instances[o + 8] = i; // lut row
-      instances[o + 9] = tx0 / inkW; // padLeft (ink-width units)
-      instances[o + 10] = (bmp.width - tx1) / inkW; // padRight
-      instances[o + 11] = (bmp.height - tyTop) / inkH; // padTop (ink-height units)
-      instances[o + 12] = tyBot / inkH; // padBottom
+      instances[o + 0] = a.originFactor * emPx; // css px
+      instances[o + 1] = b.originFactor * emPx;
+      instances[o + 2] = a.width * emPx;
+      instances[o + 3] = b.width * emPx;
+      instances[o + 4] = a.yTop * emPx;
+      instances[o + 5] = a.height * emPx;
+      instances[o + 6] = b.yTop * emPx;
+      instances[o + 7] = b.height * emPx;
+      instances.set(ca.uv, o + 8);
+      instances.set(cb.uv, o + 12);
+      instances[o + 16] = i; // lut row
+      instances[o + 17] = slopeLeft * emPx;
+      instances[o + 18] = slopeInk * emPx;
+      // Both fields are sampled at the same box coordinate: extend the quad only
+      // as far as BOTH cells have padding, so neither sample leaves its cell.
+      instances[o + 19] = Math.min(ca.pad[0], cb.pad[0]);
+      instances[o + 20] = Math.min(ca.pad[1], cb.pad[1]);
+      instances[o + 21] = Math.min(ca.pad[2], cb.pad[2]);
+      instances[o + 22] = Math.min(ca.pad[3], cb.pad[3]);
     }
 
     const data: GlyphRunData = {
       instances,
-      instanceCount: statics.length,
-      lutAtlas: buildLUTAtlas(),
+      instanceCount: n,
+      lutAtlas: packLUTAtlas(luts),
       slices,
     };
     if (!run) run = backend.createRun();
     run.upload(data);
+    pairGeom = geom;
+    uploadedPair = live.plan ? pairKey(frame) : 'legacy';
   }
 
-  // --- kick off MSDF generation for all glyphs (worker / inline). Static.
-  function generateAtlas(): Promise<void> {
-    const jobs = statics.map((s, i) => {
-      const g = glyphs[i];
-      return msdf
-        .generate({
+  // --- MSDF generation (worker / inline), one instance at a time in priority
+  //     order. Resolves once the FIRST group (resting pair, base, both ends of
+  //     the ladder) is in; the remaining instances keep streaming afterwards.
+  const rasterJobs = new Map<string, Promise<MSDFBitmap>>();
+  function rasterStep(k: number): Promise<void> {
+    const jobs: Array<Promise<void>> = [];
+    for (const s of stepStatics[k]) {
+      if (s.commands.length === 0) continue;
+      let p = rasterJobs.get(s.glyphKey);
+      if (!p) {
+        p = msdf.generate({
           glyphId: `${s.glyphKey}@${fontSizeRaster}`,
-          commands: g.commands,
-          options: { bbox: g.bbox, fontSize: fontSizeRaster, unitsPerEm, pxRange },
+          commands: s.commands,
+          options: { bbox: s.bbox, fontSize: fontSizeRaster, unitsPerEm, pxRange },
           dpr: options.dpr ?? 1,
-        })
-        .then((bmp) => {
-          s.bitmap = bmp;
         });
+        rasterJobs.set(s.glyphKey, p);
+      }
+      jobs.push(
+        p.then((bmp) => {
+          s.bitmap = bmp;
+        }),
+      );
+    }
+    return Promise.all(jobs).then(() => {
+      stepLoaded[k] = true;
     });
-    return Promise.all(jobs).then(() => void 0);
+  }
+
+  function generateAtlas(): Promise<void> {
+    const K = stepStatics.length;
+    if (!plan) return rasterStep(0).then(() => refreshLive());
+    const rest = plan.steps[plan.base] ? resolveFrame(plan, Math.max(1, restingStretch)) : null;
+    const first = new Set<number>([plan.base, K - 1]);
+    if (rest) {
+      first.add(rest.k0);
+      first.add(rest.k1);
+    }
+    const order = [...first];
+    const later: number[] = [];
+    for (let k = 0; k < K; k++) if (!first.has(k)) later.push(k);
+    later.sort((a, b) => Math.abs(a - plan.base) - Math.abs(b - plan.base));
+    return Promise.all(order.map(rasterStep)).then(() => {
+      refreshLive();
+      // Stream the rest sequentially (keeps the raster worker's queue short so a
+      // font-size change or destroy is not stuck behind a long backlog).
+      let chain = Promise.resolve();
+      for (const k of later) {
+        chain = chain.then(() => {
+          if (destroyed) return;
+          return rasterStep(k).then(() => {
+            if (destroyed) return;
+            refreshLive();
+            lastStretch = Number.NaN; // re-resolve the frame over the finer ladder
+            ticker.wake();
+          });
+        });
+      }
+      chain.catch(() => {
+        /* a failed instance stays unloaded; frames keep using the loaded ones */
+      });
+    });
   }
 
   /** Parse a computed CSS color (`rgb()` / `rgba()`) into straight-alpha 0..1. */
@@ -374,25 +543,36 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     }
   }
 
-  /** CSS px the run needs at `stretch` (ink + AA padding), never below the host box. */
-  function runExtent(stretch: number): { w: number; h: number } {
+  /** CSS px the run needs for a frame (ink + AA padding), never below the host box. */
+  function runExtent(growth: number, mix: number): { w: number; h: number } {
     const emPx = fontSizePx / unitsPerEm;
     let right = hostRect?.w ?? 0;
     let bottom = hostRect?.h ?? 0;
-    for (const s of statics) {
+    for (let k = 0; k < stepStatics.length; k++) {
+      for (const s of stepStatics[k]) {
+        const bmp = s.bitmap;
+        const padPx = bmp ? (bmp.padding / bmp.scale) * emPx : 0;
+        const b = (s.yTop + s.height) * emPx + 2 * padPx;
+        if (b > bottom) bottom = b;
+      }
+    }
+    const n = pairGeom.length / 6;
+    for (let i = 0; i < n; i++) {
+      const g = i * 6;
+      const s = stepStatics[0][i];
       const bmp = s.bitmap;
       const padPx = bmp ? (bmp.padding / bmp.scale) * emPx : 0;
-      const r = stretch * (s.originFactor + s.width) * emPx + 2 * padPx;
-      const b = (s.yTop + s.height) * emPx + 2 * padPx;
+      const left = pairGeom[g] + mix * (pairGeom[g + 1] - pairGeom[g]);
+      const width = pairGeom[g + 2] + mix * (pairGeom[g + 3] - pairGeom[g + 2]);
+      const r = (left + width + growth * (pairGeom[g + 4] + pairGeom[g + 5])) * emPx + 2 * padPx;
       if (r > right) right = r;
-      if (b > bottom) bottom = b;
     }
     return { w: Math.ceil(right), h: Math.ceil(bottom) };
   }
 
   /** Grow the per-host surface (never shrink) so the stretched run is never clipped. */
-  function ensureSurface(stretch: number, d: number): void {
-    const need = runExtent(stretch);
+  function ensureSurface(growth: number, mix: number, d: number): void {
+    const need = runExtent(growth, mix);
     if (need.w > surfW || need.h > surfH) {
       surfW = Math.max(surfW, Math.ceil(need.w * 1.25));
       surfH = Math.max(surfH, need.h);
@@ -467,8 +647,18 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
     // at the engine/tier-selection layer, not inside the GPU renderer.
     const stretch = Math.max(1, rawStretch);
     lastStretch = stretch;
+    // Width plan: resolve the instance pair + residual; switch the uploaded pair
+    // only when the frame crosses into a different one.
+    let growth = stretch - 1;
+    let instMix = 0;
+    if (live.plan) {
+      const frame = liveFrame(stretch);
+      if (pairKey(frame) !== uploadedPair) assembleAndUpload(frame, false);
+      growth = frame.growth;
+      instMix = frame.k0 === frame.k1 ? 0 : frame.t;
+    }
     const d = dpr();
-    ensureSurface(stretch, d);
+    ensureSurface(growth, instMix, d);
     // The shared GL canvas is an offscreen scratch surface: draw this run at
     // its origin (scissored to the surface size), then blit into the host's
     // canvas. Grow-only so hosts sharing the canvas never thrash its size.
@@ -485,6 +675,8 @@ export function createWebglRenderer(options: WebglRendererOptions): WebglRendere
       region,
       dpr: d,
       stretch,
+      growth,
+      instMix,
       origin: 0,
       color,
       pxRange,

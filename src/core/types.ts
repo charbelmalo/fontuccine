@@ -93,6 +93,12 @@ export interface Remap {
 export interface AxisProfile {
   flex: Float32Array;
   bounds: Bounds1D;
+  /**
+   * x axis only: per-slice weight in [0, 1] of columns that can widen without
+   * distorting the glyph — horizontal spans, never stems or diagonals
+   * (core/straight-profile.ts). Drives the residual stage of width-plan.ts.
+   */
+  straight?: Float32Array;
 }
 
 export interface GlyphAnalysis {
@@ -138,8 +144,8 @@ export interface AnalyzeResponse {
   advanceWidth: number;
   bbox: BBox;
   profiles: {
-    x?: { flex: Float32Array; bounds: Bounds1D };
-    y?: { flex: Float32Array; bounds: Bounds1D };
+    x?: AxisProfile;
+    y?: AxisProfile;
   };
 }
 

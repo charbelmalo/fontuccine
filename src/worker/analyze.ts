@@ -8,6 +8,7 @@
 import type { AnalyzeRequest, AnalyzeResponse, AxisProfile, Axis } from '../core/types.ts';
 import { sampleOutline, sampleBounds } from '../core/sampling/outline.ts';
 import { computeFlexProfile, buildFlexField } from '../core/flex-profile.ts';
+import { computeStraightProfile } from '../core/straight-profile.ts';
 
 export function analyzeGlyph(req: AnalyzeRequest): AnalyzeResponse {
   const { params } = req;
@@ -38,7 +39,21 @@ export function analyzeGlyph(req: AnalyzeRequest): AnalyzeResponse {
       maxShareFactor: params.maxShareFactor,
       field,
     });
-    profiles[axis] = { flex, bounds };
+    if (axis === 'x') {
+      // Columns that may widen without distorting the glyph (width-plan.ts).
+      const straight = computeStraightProfile(outline, {
+        slices: params.slices,
+        bounds,
+        crossBounds,
+        k: params.k,
+        interiorSamples: params.interiorSamples,
+        smooth: params.smooth,
+        field,
+      });
+      profiles[axis] = { flex, bounds, straight };
+    } else {
+      profiles[axis] = { flex, bounds };
+    }
   }
 
   return {
@@ -54,6 +69,7 @@ export function analyzeGlyph(req: AnalyzeRequest): AnalyzeResponse {
 export function collectTransferables(res: AnalyzeResponse): ArrayBuffer[] {
   const buffers: ArrayBuffer[] = [];
   if (res.profiles.x) buffers.push(res.profiles.x.flex.buffer as ArrayBuffer);
+  if (res.profiles.x?.straight) buffers.push(res.profiles.x.straight.buffer as ArrayBuffer);
   if (res.profiles.y) buffers.push(res.profiles.y.flex.buffer as ArrayBuffer);
   return buffers;
 }
