@@ -4,6 +4,14 @@
   "description": "Framework-agnostic, tangent-aligned font stretching that looks like motion design, not scale(). Interaction-driven, typographically correct on any outline font.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/charbelmalo/fontuccine.git"
+  },
+  "homepage": "https://github.com/charbelmalo/fontuccine#readme",
+  "bugs": {
+    "url": "https://github.com/charbelmalo/fontuccine/issues"
+  },
   "keywords": [
     "typography",
     "variable-fonts",
