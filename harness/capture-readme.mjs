@@ -154,7 +154,7 @@ try {
       window.__instance = Fontuccine.attach('#rendered', {
         tier, fontUrl: '/font.ttf', axis: 'horizontal', trigger: 'custom',
         minStretchRatio: 1, maxStretchRatio: 2.5, respectReducedMotion: false,
-        inkDilation: 'auto', physics: { stiffness: 400, damping: 40 },
+        inkDilation: 'auto', easingCurve: 'cubic-bezier(0,0,1,1)', easingDuration: 0.1,
       });
       await window.__instance.ready;
     }, tier);
@@ -269,6 +269,7 @@ try {
     node: process.version, launchArgs: ARGS, viewport: webgl.viewport,
     font: { path: FONT, sha256: await hashFile(FONT), license: 'playground/public/fonts/OFL.txt' },
     text: TEXT, axis: 'horizontal', ratio: RATIO, inkDilation: 'auto', effects: 'none',
+    motion: { easingCurve: 'cubic-bezier(0,0,1,1)', easingDuration: 0.1 },
     webgl: webgl.evidence, svg: svg.evidence, pixels: { ...pixels, minimumIou: 0.93 },
     image: { path: 'demo-horizontal.png', sha256: sha256(png) },
     scope: 'Built public attach API in this checkout; one Roboto Flex TTF, horizontal WebGL at 2.5×. SVG is the pixel reference. No other modes, fonts, or browsers are established by this capture.',
