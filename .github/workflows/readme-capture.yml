@@ -1,0 +1,31 @@
+name: Temporary README capture
+on:
+  push:
+    branches: [codex/refresh-readme-width-plan-demo]
+permissions:
+  contents: write
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm --prefix playground ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run harness
+      - run: node harness/capture-readme.mjs
+      - name: Save verified capture on this branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add demos/demo-horizontal.png demos/demo-horizontal.capture.json
+          git commit -m 'docs: capture current width-plan renderer in Chrome'
+          git push
