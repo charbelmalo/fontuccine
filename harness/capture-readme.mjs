@@ -251,7 +251,7 @@ try {
       inkWebgl += x; inkSvg += y; inter += x && y; union += x || y;
     }
     return { width: aMask.w, height: aMask.h, inkWebgl, inkSvg, iou: inter / union };
-  }, [webgl.after.toString('base64'), svg.after.toString('base64')]);
+  }, [Buffer.from(webgl.after).toString('base64'), Buffer.from(svg.after).toString('base64')]);
   assert.ok(pixels.inkWebgl > 1000 && pixels.inkSvg > 1000, 'both renderers must paint substantial ink');
   assert.ok(pixels.iou >= 0.93, `captured WebGL/SVG IoU ${pixels.iou} < 0.93`);
 
