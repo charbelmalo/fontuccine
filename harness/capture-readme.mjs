@@ -180,7 +180,11 @@ try {
     const before = await stableShot();
     await page.evaluate(ratio => window.__instance.set(ratio), RATIO);
     // Wait for the requested frame to reach the real GPU, not merely set().
-    if (tier === 'webgl') await page.waitForFunction(() => window.__gpu?.u_growth > 0, { timeout: 30000 });
+    if (tier === 'webgl') await page.waitForFunction(ratio => {
+      const p = window.__plan;
+      const expected = (p.steps[p.base].width * ratio - p.steps.at(-1).width) / p.residualMeasure;
+      return Math.abs(window.__gpu?.u_growth - expected) < 0.00001;
+    }, { timeout: 30000 }, RATIO);
     else await delay(1000);
     const after = await stableShot();
     assert.notEqual(sha256(before), sha256(after), 'specimen pixels must change from 1× to 2.5×');
@@ -218,7 +222,7 @@ try {
   assert.ok(last.location.wdth > base.location.wdth);
   assert.ok(last.width < base.width * RATIO, 'this specimen must reach the residual stage');
   const expectedGrowth = (base.width * RATIO - last.width) / plan.residualMeasure;
-  assert.ok(Math.abs(gpu.u_growth - expectedGrowth) < 0.00001, 'real GPU must use the width-plan residual');
+  assert.ok(Math.abs(gpu.u_growth - expectedGrowth) < 0.00001, `real GPU must use the width-plan residual: actual=${gpu.u_growth}, expected=${expectedGrowth}`);
   assert.equal(gpu.u_instMix, 0);
   assert.ok(Math.abs(webgl.evidence.nativeWidth - base.width * SIZE / 1000) < 1, 'DOM and outline base widths must match');
 
