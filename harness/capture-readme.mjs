@@ -82,7 +82,7 @@ let browser;
 try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}/`;
-  browser = await puppeteer.launch({ executablePath: chrome, headless: 'shell', args: ARGS });
+  browser = await puppeteer.launch({ executablePath: chrome, headless: 'shell', args: ARGS, protocolTimeout: 30000 });
 
   async function open(tier) {
     const page = await browser.newPage();
@@ -230,13 +230,22 @@ try {
   assert.equal(gpu.u_instMix, 0);
   assert.ok(Math.abs(webgl.evidence.nativeWidth - base.width * SIZE / 1000) < 1, 'DOM and outline base widths must match');
 
+  console.log(`· verified WebGL: ${plan.steps.length} instances; residual=${gpu.u_growth}`);
   const svg = await open('svg');
   assert.deepEqual(svg.viewport, webgl.viewport);
   // Same screenshot ink threshold as harness/run.mjs. Compare only the actual
   // specimen, excluding labels. No registration, rescaling, or image retouching.
-  const pixels = await webgl.page.evaluate(async ([a, b]) => {
+  console.log('· comparing WebGL and SVG specimen screenshots');
+  const comparePage = await browser.newPage();
+  const pixels = await comparePage.evaluate(async ([a, b]) => {
     const mask = async png => {
-      const im = new Image(); im.src = 'data:image/png;base64,' + png; await im.decode();
+      const im = new Image();
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error('PNG decode timed out')), 10000);
+        im.onload = () => { clearTimeout(timer); resolve(); };
+        im.onerror = () => { clearTimeout(timer); reject(Error('PNG decode failed')); };
+        im.src = 'data:image/png;base64,' + png;
+      });
       const c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
       const ctx = c.getContext('2d'); ctx.drawImage(im, 0, 0);
       const d = ctx.getImageData(0, 0, c.width, c.height).data;
@@ -252,10 +261,13 @@ try {
     }
     return { width: aMask.w, height: aMask.h, inkWebgl, inkSvg, iou: inter / union };
   }, [Buffer.from(webgl.after).toString('base64'), Buffer.from(svg.after).toString('base64')]);
+  await comparePage.close();
   assert.ok(pixels.inkWebgl > 1000 && pixels.inkSvg > 1000, 'both renderers must paint substantial ink');
   assert.ok(pixels.iou >= 0.93, `captured WebGL/SVG IoU ${pixels.iou} < 0.93`);
 
   // All checks pass before replacing the README asset and provenance.
+  console.log(`· specimen pixel IoU=${pixels.iou.toFixed(4)}; saving comparison`);
+  await webgl.page.bringToFront();
   const png = await webgl.page.screenshot({ captureBeyondViewport: false });
   const distHashes = Object.fromEntries(await Promise.all((await readdir(path.join(ROOT, 'dist')))
     .filter(f => f.endsWith('.js')).sort().map(async f => [f, await hashFile('dist/' + f)])));
