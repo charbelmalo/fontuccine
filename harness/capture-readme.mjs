@@ -184,7 +184,11 @@ try {
       const p = window.__plan;
       const expected = (p.steps[p.base].width * ratio - p.steps.at(-1).width) / p.residualMeasure;
       return Math.abs(window.__gpu?.u_growth - expected) < 0.00001;
-    }, { timeout: 30000 }, RATIO);
+    }, { timeout: 30000 }, RATIO).catch(async error => {
+      const observed = await page.evaluate(() => ({ plan: window.__plan, gpu: window.__gpu,
+        notes: window.__instance.notes, text: document.querySelector('#rendered').outerHTML }));
+      throw Error('Target GPU frame did not arrive: ' + JSON.stringify(observed), { cause: error });
+    });
     else await delay(1000);
     const after = await stableShot();
     assert.notEqual(sha256(before), sha256(after), 'specimen pixels must change from 1× to 2.5×');
