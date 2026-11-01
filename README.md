@@ -21,12 +21,16 @@ collapse. Fontuccine widens text the way a type designer would:
 
 A static font (or a font without a width axis) uses step 2 alone.
 
-![horizontal stretch demo](demos/demo-horizontal.png)
+![Native text, CSS scaleX(2.5), and Fontuccine WebGL width-plan comparison](demos/demo-horizontal.png)
 
-*Real browser capture (headless Chrome, 2× DPR) of the WebGL tier on Roboto Flex
-at 2.5×: original DOM text, CSS `scaleX(2.5)`, and Fontuccine's tangent-aligned
-stretch. Captured with the earlier flex-only model; not yet regenerated for the
-width-plan model described above.*
+*Current width-plan WebGL renderer, captured in real headless Chrome at 2× DPR
+with the bundled Roboto Flex TTF (48 px, weight 700, optical sizing auto).
+Top to bottom: native DOM text at 1×, CSS `scaleX(2.5)`, and Fontuccine at 2.5×.
+This specimen reaches the widest `wdth`/`XTRA` instance before applying residual
+straight-column stretching and tracking.
+[Reproduce the capture](demos/README.md) ·
+[Capture provenance](demos/demo-horizontal.capture.json) ·
+[Font licence](playground/public/fonts/OFL.txt).*
 
 - **Zero required runtime deps** — `opentype.js` is imported lazily, only when a tier actually parses an outline (never in the base bundle).
 - **Three render tiers, auto-dispatched** — WebGL2, SVG, or native variable-font `wdth`, picked from device capability (override with `tier`). Every tier honours the host's CSS `color`; every fall-through is written to `instance.notes`.
@@ -183,6 +187,7 @@ npm test           # node --test — 193 tests
 npm run typecheck
 npm run harness    # headless Chrome: tier matrix + WebGL↔SVG pixel gate (needs Chrome)
 npm run demo       # scripts/demo.ts — core-math SVG illustration (not the renderer)
+npm run demo:capture # current README comparison + provenance (needs Chrome)
 ```
 
 ## How it works

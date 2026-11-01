@@ -1,0 +1,305 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-11-01T12:29:27.344Z",
+  "source": {
+    "revision": "3f0f0c9df074fab8ecd9fbe0928c2b1e8e94cfa0",
+    "srcTree": "1269c0cc9223d040745840a52aeab23d71380cf6",
+    "sourceChanges": "",
+    "distSha256": {
+      "chunk-DWYWQNLO.js": "38ff230efb5c6097ba0bdbc8ec1410a89f9aa0b24f7cce24e9728ff245f423b6",
+      "chunk-H6C63IS3.js": "397655b8b22fdf4654b7d5e1cb6b4f1ceee096b653f1df6ad08997dd1d9b7c25",
+      "chunk-HVR63FJ4.js": "1a6a1eafcd3241b7448a2938e9aefdf39941784e157d686675f1ae45cc1f4367",
+      "chunk-JUUK5SOM.js": "dfa35fc08d288ade7b1d4a93cb39b6bcb272ba789f42fa0bfececf7142724997",
+      "chunk-LDKHDEMY.js": "6c3827d808c1b427ce80775af042e13a06e2b666d85c69758b71b681b63fe0e6",
+      "chunk-LVETGP2C.js": "c8f4d7110fad6b787cc7b43a1ee930646b80ba536f46c6a81063283fcbcbd62d",
+      "chunk-NINCEOTK.js": "a6f9eae9e1a95280be6058f16286287cc9b82ee07185825e1b523f49c21d4f59",
+      "index.js": "ca3def0912aacbbce97cd5598695d71a55c59843d6776dfc1224fec5de87d81a",
+      "parser-H4T47PC5.js": "74712ea694a2eb0d80b4b0e2650b8a11abe96ee7d446be3d73a5032dabd3e2f0",
+      "react.js": "0466da6940eff10818a73e3d8b2859e420679552481abc6612fbb1bf9e08f4ef",
+      "svg.js": "d61c3c54f72cf09577e264360b83e5d19aaa5981ff05f30c36c8ee34f2dcbe6c",
+      "variation-L4YETLSZ.js": "34fab8b5032ee31faddf28351de00d3e155c3c051eb988c2e8f3856ac5f81720",
+      "vf.js": "f15a95c06ab68d6124f247cc83b1f5ce147d3cfdb0da4574faab35643ae5df6d",
+      "webgl.js": "0974a7d41b4959cd88b1b3b0f55d9568e3b7a048338ccc7358ab1fe0c4af7b7f"
+    }
+  },
+  "captureScriptSha256": "6c2912ca7b70a41337856f3ef1bdc0f4eb2794f88d30e744a223106eeecbaeb5",
+  "ciRun": "https://github.com/charbelmalo/fontuccine/actions/runs/41306649240",
+  "browser": "Chrome/156.0.8078.47",
+  "os": "linux 7.0.0-1017-azure x64",
+  "node": "v24.22.1",
+  "launchArgs": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
+    "--ignore-gpu-blocklist",
+    "--enable-webgl"
+  ],
+  "viewport": {
+    "width": 1428,
+    "height": 390,
+    "deviceScaleFactor": 2
+  },
+  "font": {
+    "path": "playground/public/fonts/RobotoFlex-VF.ttf",
+    "sha256": "94b86146c519509a910ba3edec89214370615bfe423f5bab9c04db879b908a97",
+    "license": "playground/public/fonts/OFL.txt"
+  },
+  "text": "Stretch with intention",
+  "axis": "horizontal",
+  "ratio": 2.5,
+  "inkDilation": "auto",
+  "effects": "none",
+  "motion": {
+    "easingCurve": "cubic-bezier(0,0,1,1)",
+    "easingDuration": 0.1
+  },
+  "webgl": {
+    "tier": "webgl",
+    "notes": [],
+    "style": {
+      "fontFamily": "\"Capture Roboto Flex\"",
+      "fontSize": "48px",
+      "fontWeight": "700",
+      "fontStretch": "100%",
+      "fontStyle": "normal",
+      "fontOpticalSizing": "auto",
+      "fontVariationSettings": "normal"
+    },
+    "canvas": {
+      "width": 2890,
+      "height": 144,
+      "inHost": true
+    },
+    "plan": {
+      "base": 0,
+      "tracking": 100,
+      "steps": [
+        {
+          "width": 9736.58561706543,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 100,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 468,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 10354.003190994263,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 112.75,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 468,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 10971.420764923096,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 125.5,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 468,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 11588.838338851929,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 138.25,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 468,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 12206.255912780762,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 151,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 468,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 12811.114311218262,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 151,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 501.75,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 13415.972709655762,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 151,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 535.5,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 14020.831108093262,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 151,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 569.25,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        },
+        {
+          "width": 14625.689506530762,
+          "location": {
+            "opsz": 48,
+            "wght": 700,
+            "GRAD": 0,
+            "wdth": 151,
+            "slnt": 0,
+            "XOPQ": 96,
+            "YOPQ": 79,
+            "XTRA": 603,
+            "YTUC": 712,
+            "YTLC": 514,
+            "YTAS": 750,
+            "YTDE": -203,
+            "YTFI": 738
+          }
+        }
+      ],
+      "residualMeasure": 5714.556378221538
+    },
+    "gpu": {
+      "u_growth": 1.7001800537109375,
+      "u_instMix": 0
+    },
+    "nativeWidth": 466.921875,
+    "cssScaledWidth": 1167.3046875,
+    "overflow": false,
+    "glRenderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+    "fonts": [
+      {
+        "familyName": "Roboto Flex",
+        "postScriptName": "RobotoFlex-Regular",
+        "isCustomFont": true,
+        "glyphCount": 22
+      }
+    ],
+    "errors": [],
+    "warnings": []
+  },
+  "svg": {
+    "tier": "svg",
+    "notes": [],
+    "style": {
+      "fontFamily": "\"Capture Roboto Flex\"",
+      "fontSize": "48px",
+      "fontWeight": "700",
+      "fontStretch": "100%",
+      "fontStyle": "normal",
+      "fontOpticalSizing": "auto",
+      "fontVariationSettings": "normal"
+    },
+    "canvas": null,
+    "nativeWidth": 466.921875,
+    "cssScaledWidth": 1167.3046875,
+    "overflow": false,
+    "glRenderer": null,
+    "fonts": [
+      {
+        "familyName": "Roboto Flex",
+        "postScriptName": "RobotoFlex-Regular",
+        "isCustomFont": true,
+        "glyphCount": 22
+      }
+    ],
+    "errors": [],
+    "warnings": []
+  },
+  "pixels": {
+    "width": 2400,
+    "height": 160,
+    "inkWebgl": 47585,
+    "inkSvg": 48202,
+    "iou": 0.9827161516010846,
+    "minimumIou": 0.93
+  },
+  "image": {
+    "path": "demo-horizontal.png",
+    "sha256": "98eaaa60ca2cf441679370abe85d73a672602d771b447b8de74007293d2f5e87"
+  },
+  "scope": "Built public attach API in this checkout; one Roboto Flex TTF, horizontal WebGL at 2.5×. SVG is the pixel reference. No other modes, fonts, or browsers are established by this capture."
+}
